@@ -3,7 +3,7 @@ use thiserror::Error;
 
 #[derive(BorshDeserialize, BorshSerialize, Debug)]
 pub struct State {
-    pub random_numbers : [f64; 512]
+    pub random_numbers : [f64; 256]
 }
 
 #[derive(Error, Debug)]

@@ -1,15 +1,14 @@
 use std::mem;
 use borsh::{BorshDeserialize, BorshSerialize};
 use std::str::FromStr;
-use crate::state::{State};
-
+use crate::state::{State, RNGMeta, RNGMethod, HashStruct};
+use sha2::{Sha256, Digest};
 
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
     entrypoint::ProgramResult,
-    msg,
-    pubkey::Pubkey,
-    program_error::ProgramError,
+    pubkey::Pubkey,msg,
+    program_error::ProgramError,clock::Clock,sysvar::Sysvar
 };
 
 use crate::{instruction::RNGInstruction};
@@ -21,9 +20,9 @@ impl Processor {
         let instruction = RNGInstruction::try_from_slice(&instruction_data[..])?;
 
         match instruction {
-            RNGInstruction::GenerateRandom {initial_seed} => {
+            RNGInstruction::GenerateRandom {metadata} => {
 
-                Self::generate_randoms(program_id, accounts, initial_seed)
+                Self::generate_randoms(program_id, accounts, metadata)
             }
         }
     } 
@@ -51,10 +50,17 @@ impl Processor {
         return result - 1.0;
     }
 
+    unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+        ::std::slice::from_raw_parts(
+            (p as *const T) as *const u8,
+            ::std::mem::size_of::<T>(),
+        )
+    }
+
     fn generate_randoms(
         program_id: &Pubkey,
         accounts: &[AccountInfo],
-        initial_seed: u64
+        meta: RNGMeta
         ) ->ProgramResult {
 
         let account_info_iter = &mut accounts.iter();
@@ -74,14 +80,32 @@ impl Processor {
             return Err(ProgramError::InvalidAccountData);
         }
 
-        let mut randoms = State::try_from_slice(&data_account.data.borrow()[..])?;
+        const n_randoms: usize = 256;
+        let mut randoms = State { random_numbers : [0.0; n_randoms] };
 
-        let n_randoms = 512;
-        let mut seed = initial_seed;
-        for i in 0..n_randoms {
-            seed = Self::shift_seed(seed);
-            let ran = Self::generate_random(seed);
-            randoms.random_numbers[i] = ran;
+        let mut seed = meta.initial_seed;
+        
+        match meta.method {
+            RNGMethod::Xorshift => {
+                for i in 0..n_randoms {
+                    seed = Self::shift_seed(seed);
+                    let ran = Self::generate_random(seed);
+                    randoms.random_numbers[i] = ran;
+                }
+            },
+            RNGMethod::Hash => {         
+                for i in 0..15 {
+                    let nonce = i as u64;
+                    let hashstruct = HashStruct {nonce : nonce, initial_seed : meta.initial_seed};
+                    let vec_to_hash = unsafe{Self::any_as_u8_slice(&hashstruct)};
+                    let hash = &(Sha256::new()
+                    .chain_update(vec_to_hash)
+                    .finalize()[..8]);
+                    let ran_u64 = u64::from_le_bytes(hash.try_into().expect("slice with incorrect length"));
+                    let ran = Self::generate_random(ran_u64);
+                    randoms.random_numbers[i] = ran;
+                }
+            }
         }
 
         randoms.serialize(&mut &mut data_account.data.borrow_mut()[..])?;

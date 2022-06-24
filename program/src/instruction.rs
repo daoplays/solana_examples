@@ -2,6 +2,8 @@ use solana_program::program_error::ProgramError;
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::error::RNGError::InvalidInstruction;
+use crate::state::{RNGMeta};
+
 
 
 
@@ -9,7 +11,7 @@ use crate::error::RNGError::InvalidInstruction;
 pub enum RNGInstruction {
 
     GenerateRandom {
-        initial_seed : u64
+        metadata: RNGMeta
     }
 }
 
@@ -19,7 +21,7 @@ impl RNGInstruction {
         let (tag, rest) = input.split_first().ok_or(InvalidInstruction)?;
         Ok(match tag {
             0 => Self::GenerateRandom {
-                initial_seed: u64::try_from_slice(&rest)?,
+                metadata: RNGMeta::try_from_slice(&rest)?,
             },
             _ => return Err(InvalidInstruction.into()),
         })
