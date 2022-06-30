@@ -8,7 +8,8 @@ pub struct State {
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum RNGMethod {
     Xorshift,
-    Hash
+    Hash,
+    None
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]

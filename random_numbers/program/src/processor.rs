@@ -8,7 +8,7 @@ use solana_program::{
     account_info::{next_account_info, AccountInfo},
     entrypoint::ProgramResult,
     pubkey::Pubkey,msg,
-    program_error::ProgramError,clock::Clock,sysvar::Sysvar
+    program_error::ProgramError
 };
 
 use crate::{instruction::RNGInstruction};
@@ -42,7 +42,7 @@ impl Processor {
     }
 
     // convert the u64 into a double with range 0..1
-    fn generate_random(seed: u64) -> f64 {
+    fn generate_random_f64(seed: u64) -> f64 {
 
         let tmp = 0x3FF0000000000000 | (seed & 0xFFFFFFFFFFFFF);
         let result: f64 = unsafe { mem::transmute(tmp) };
@@ -55,6 +55,26 @@ impl Processor {
             (p as *const T) as *const u8,
             ::std::mem::size_of::<T>(),
         )
+    }
+
+    // create a sha256 hash from our initial seed and a nonce value to produce 4 64bit random numbers
+    fn get_hashed_randoms(seed: u64, nonce: u64) -> [u64; 4] {
+
+        let hashstruct = HashStruct {nonce : nonce, initial_seed : seed};
+        let vec_to_hash = unsafe{Self::any_as_u8_slice(&hashstruct)};
+        let hash= &(Sha256::new()
+        .chain_update(vec_to_hash)
+        .finalize()[..32]);
+
+        // hash is a vector of 32 8bit numbers.  We can take slices of this to generate our 4 random u64s
+        let mut hashed_randoms : [u64; 4] = [0; 4];
+        for i in 0..4 {
+            let hash_slice = &hash[i*8..(i+1)*8];
+            hashed_randoms[i] = u64::from_le_bytes(hash_slice.try_into().expect("slice with incorrect length"));
+        }
+
+        return hashed_randoms;
+        
     }
 
     fn generate_randoms(
@@ -87,24 +107,26 @@ impl Processor {
         
         match meta.method {
             RNGMethod::Xorshift => {
+                msg!("Generating 256 random numbers with Xorshift method");
                 for i in 0..n_randoms {
                     seed = Self::shift_seed(seed);
-                    let ran = Self::generate_random(seed);
+                    let ran = Self::generate_random_f64(seed);
                     randoms.random_numbers[i] = ran;
                 }
             },
             RNGMethod::Hash => {         
+                msg!("Generating 60 random numbers with hash method");
                 for i in 0..15 {
                     let nonce = i as u64;
-                    let hashstruct = HashStruct {nonce : nonce, initial_seed : meta.initial_seed};
-                    let vec_to_hash = unsafe{Self::any_as_u8_slice(&hashstruct)};
-                    let hash = &(Sha256::new()
-                    .chain_update(vec_to_hash)
-                    .finalize()[..8]);
-                    let ran_u64 = u64::from_le_bytes(hash.try_into().expect("slice with incorrect length"));
-                    let ran = Self::generate_random(ran_u64);
-                    randoms.random_numbers[i] = ran;
+                    let hashed_randoms = Self::get_hashed_randoms(meta.initial_seed, nonce);
+                    for j in 0..4 {
+                        let ran = Self::generate_random_f64(hashed_randoms[j]);
+                        randoms.random_numbers[4*i + j] = ran;
+                    }
                 }
+            }
+            RNGMethod::None => {   
+                msg!("Not generating random numbers to get baseline cost");
             }
         }
 

@@ -24,14 +24,17 @@ pub struct State {
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum RNGMethod {
     Xorshift,
-    Hash
+    Hash,
+    None
 }
 
 fn get_method_from_int(index: u64) -> RNGMethod {
     if index == 0 {
         return RNGMethod::Xorshift;
-    } else {
+    } else  if index == 1 {
         return RNGMethod::Hash;
+    } else {
+        return RNGMethod::None;
     }
 
 }
@@ -171,7 +174,7 @@ fn generate_randoms(key_file: &String, method: RNGMethod) ->Result<()> {
         &program).unwrap();
 
     let mut rng = rand::thread_rng();
-    let seed: u64 = 1;//rng.gen();
+    let seed: u64 = rng.gen();
     let meta_data =  RNGMeta{initial_seed: seed, method: method};
 
 
