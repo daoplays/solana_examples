@@ -25,6 +25,7 @@ pub struct State {
 pub enum RNGMethod {
     Xorshift,
     Hash,
+    FastHash,
     None
 }
 
@@ -33,6 +34,9 @@ fn get_method_from_int(index: u64) -> RNGMethod {
         return RNGMethod::Xorshift;
     } else  if index == 1 {
         return RNGMethod::Hash;
+    }
+    else  if index == 2 {
+            return RNGMethod::FastHash;
     } else {
         return RNGMethod::None;
     }

@@ -9,6 +9,7 @@ pub struct State {
 pub enum RNGMethod {
     Xorshift,
     Hash,
+    FastHash,
     None
 }
 

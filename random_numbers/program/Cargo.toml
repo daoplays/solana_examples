@@ -12,5 +12,7 @@ spl-token = {version = "3.2.0", features = ["no-entrypoint"]}
 arrayref = "0.3.6"
 borsh = "0.9.3"
 sha2 = "0.10.2"
+murmur3 = "0.5.1"
+
 [lib]
 crate-type = ["cdylib", "lib"]
