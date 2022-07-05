@@ -7,7 +7,7 @@ use crate::state::{Result};
 use solana_client::rpc_client::RpcClient;
 use solana_program::{pubkey::Pubkey};
 use solana_sdk::{
-    signature::Keypair, signer::Signer,
+    signer::Signer,
     instruction::{AccountMeta, Instruction},
     transaction::Transaction, signer::keypair::read_keypair_file,
 };
@@ -48,14 +48,19 @@ fn generate_seed(key_file: &String) ->Result<()> {
     let connection = RpcClient::new(URL);
 
     let program = Pubkey::from_str("Hqw9GzaxEg1efH8BciNN5D32A5fMAfBdDM3qudRdb9o5").unwrap();
-    let pyth_key = Pubkey::from_str("HovQMDrbAgAYPCmHVSrezcSmkMtXSSUsLDFANExrZh2J").unwrap();
+    let btc_key = Pubkey::from_str("HovQMDrbAgAYPCmHVSrezcSmkMtXSSUsLDFANExrZh2J").unwrap();
+    let eth_key = Pubkey::from_str("EdVCmQ9FSPcVe5YySXDPCRmc8aDQLKJ9xvYBMZPie1Vw").unwrap();
+    let sol_key = Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+
 
     
     let gen_seed_idx = Instruction::new_with_borsh(
         program,
         &RNGInstruction::GenerateSeed,
         vec![
-            AccountMeta::new_readonly(pyth_key, false)
+            AccountMeta::new_readonly(btc_key, false),
+            AccountMeta::new_readonly(eth_key, false),
+            AccountMeta::new_readonly(sol_key, false)
         ],
     );
 

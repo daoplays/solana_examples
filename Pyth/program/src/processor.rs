@@ -59,34 +59,34 @@ impl Processor {
     }
 
     fn generate_seed(
-        program_id: &Pubkey,
+        _program_id: &Pubkey,
         accounts: &[AccountInfo]
         ) ->ProgramResult {
 
         // we will use 3 streams, BTC,  ETH and SOL
-        let BTC_key =   Pubkey::from_str("HovQMDrbAgAYPCmHVSrezcSmkMtXSSUsLDFANExrZh2J").unwrap();
-        let ETH_key =   Pubkey::from_str("EdVCmQ9FSPcVe5YySXDPCRmc8aDQLKJ9xvYBMZPie1Vw").unwrap();
-        let SOL_key =   Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        let btc_key =   Pubkey::from_str("HovQMDrbAgAYPCmHVSrezcSmkMtXSSUsLDFANExrZh2J").unwrap();
+        let eth_key =   Pubkey::from_str("EdVCmQ9FSPcVe5YySXDPCRmc8aDQLKJ9xvYBMZPie1Vw").unwrap();
+        let sol_key =   Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
 
         let account_info_iter = &mut accounts.iter();
 
         // first accounts are the pyth oracles
-        let BTC_account_info = next_account_info(account_info_iter)?;
-        let ETH_account_info = next_account_info(account_info_iter)?;
-        let SOL_account_info = next_account_info(account_info_iter)?;
+        let btc_account_info = next_account_info(account_info_iter)?;
+        let eth_account_info = next_account_info(account_info_iter)?;
+        let sol_account_info = next_account_info(account_info_iter)?;
 
         // check the accounts match what we expect
-        if  BTC_account_info.key != &BTC_key || 
-            ETH_account_info.key != &ETH_key ||
-            SOL_account_info.key != &SOL_key 
+        if  btc_account_info.key != &btc_key || 
+            eth_account_info.key != &eth_key ||
+            sol_account_info.key != &sol_key 
         {
             return Err(ProgramError::InvalidAccountData);
         }
 
 
-        let btc_price_feed = load_price_feed_from_account_info( &BTC_account_info ).unwrap();
-        let eth_price_feed = load_price_feed_from_account_info( &ETH_account_info ).unwrap();
-        let sol_price_feed = load_price_feed_from_account_info( &SOL_account_info ).unwrap();
+        let btc_price_feed = load_price_feed_from_account_info( &btc_account_info ).unwrap();
+        let eth_price_feed = load_price_feed_from_account_info( &eth_account_info ).unwrap();
+        let sol_price_feed = load_price_feed_from_account_info( &sol_account_info ).unwrap();
 
         let btc_price_struct = btc_price_feed.get_current_price().unwrap();
         let eth_price_struct = eth_price_feed.get_current_price().unwrap();
@@ -101,9 +101,9 @@ impl Processor {
         let sol_price_value = u64::try_from(sol_price_struct.price).unwrap();
         let sol_price_error = sol_price_struct.conf;
 
-        msg!("btc price: {} {}", btc_price_value, btc_price_error);
-        msg!("eth price: {} {}", eth_price_value, eth_price_error);
-        msg!("sol price: {} {}", sol_price_value, sol_price_error);
+        msg!("btc price: ({} +/- {}) x 10^{}", btc_price_value, btc_price_error, btc_price_struct.expo);
+        msg!("eth price: ({} +/- {}) x 10^{}", eth_price_value, eth_price_error, eth_price_struct.expo);
+        msg!("sol price: ({} +/- {}) x 10^{}", sol_price_value, sol_price_error, sol_price_struct.expo);
 
         let mut seed_values = SeedStruct { seed_prices : [0; 9] };
         seed_values.seed_prices[0] = Self::shift_seed(Self::shift_seed(btc_price_value + btc_price_error));
@@ -127,9 +127,9 @@ impl Processor {
 
         let seed = lower ^ upper;
         let seed_double = Self::generate_random_f64(seed);
-        msg!("final seed: {} {}", seed, seed_double);
+        msg!("final seed: {} => {}", seed, seed_double);
 
-
+ 
         Ok(())
     }
 }

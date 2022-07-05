@@ -14,7 +14,7 @@ pub enum RNGInstruction {
 impl RNGInstruction {
     /// Unpacks a byte buffer into a [EscrowInstruction].
     pub fn unpack(input: &[u8]) -> Result<Self, ProgramError> {
-        let (tag, rest) = input.split_first().ok_or(InvalidInstruction)?;
+        let (tag, _rest) = input.split_first().ok_or(InvalidInstruction)?;
         Ok(match tag {
             0 => Self::GenerateSeed,
             _ => return Err(InvalidInstruction.into()),
