@@ -15,9 +15,34 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use solana_transaction_status::UiTransactionEncoding;
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub enum SeedMethod {
+    ShiftMurmur,
+    SHA256Hash,
+    None
+}
+
+fn get_method_from_int(index: u64) -> SeedMethod {
+    if index == 0 {
+        return SeedMethod::ShiftMurmur;
+    } else  if index == 1 {
+        return SeedMethod::SHA256Hash;
+    }
+    else {
+        return SeedMethod::None;
+    }
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct SeedMeta {
+    pub method : SeedMethod
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum RNGInstruction {
 
-    GenerateSeed
+    GenerateSeed {
+        metadata : SeedMeta
+    }
 }
 const URL: &str = "https://api.devnet.solana.com";
 
@@ -29,8 +54,10 @@ fn main() {
     let function = &args[2];
 
     if function == "generate_seed" {
-        
-        if let Err(err) = generate_seed(key_file) {
+        let index_arg = &args[3];
+        let index: u64 = index_arg.parse().unwrap();
+        let method = get_method_from_int(index);
+        if let Err(err) = generate_seed(key_file, method) {
             eprintln!("{:?}", err);
             std::process::exit(1);
         }
@@ -39,7 +66,7 @@ fn main() {
 
 }
 
-fn generate_seed(key_file: &String) ->Result<()> {
+fn generate_seed(key_file: &String, method: SeedMethod) ->Result<()> {
 
     // (2) Create a new Keypair for the new account
     let wallet = read_keypair_file(key_file).unwrap();
@@ -53,10 +80,11 @@ fn generate_seed(key_file: &String) ->Result<()> {
     let sol_key = Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
 
 
-    
+    let meta_data =  SeedMeta{method: method};
+
     let gen_seed_idx = Instruction::new_with_borsh(
         program,
-        &RNGInstruction::GenerateSeed,
+        &RNGInstruction::GenerateSeed{metadata : meta_data},
         vec![
             AccountMeta::new_readonly(btc_key, false),
             AccountMeta::new_readonly(eth_key, false),

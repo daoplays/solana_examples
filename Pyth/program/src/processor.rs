@@ -1,8 +1,10 @@
 use std::mem;
 use borsh::{BorshDeserialize};
 use std::str::FromStr;
-use crate::state::{SeedStruct};
+use crate::state::{SeedMeta, SeedMethod, SeedStruct};
 use murmur3::murmur3_x64_128;
+use sha2::{Sha256, Digest};
+
 use pyth_sdk_solana::{load_price_feed_from_account_info};
 
 use solana_program::{
@@ -12,18 +14,18 @@ use solana_program::{
     program_error::ProgramError
 };
 
-use crate::{instruction::RNGInstruction};
+use crate::{instruction::SeedInstruction};
 
 pub struct Processor;
 impl Processor {
     pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], instruction_data: &[u8]) -> ProgramResult {
 
-        let instruction = RNGInstruction::try_from_slice(&instruction_data[..])?;
+        let instruction = SeedInstruction::try_from_slice(&instruction_data[..])?;
 
         match instruction {
-            RNGInstruction::GenerateSeed => {
+            SeedInstruction::GenerateSeed {metadata} => {
 
-                Self::generate_seed(program_id, accounts)
+                Self::generate_seed(program_id, accounts, metadata)
             }
         }
     } 
@@ -60,7 +62,8 @@ impl Processor {
 
     fn generate_seed(
         _program_id: &Pubkey,
-        accounts: &[AccountInfo]
+        accounts: &[AccountInfo],
+        meta: SeedMeta
         ) ->ProgramResult {
 
         // we will use 3 streams, BTC,  ETH and SOL
@@ -106,30 +109,62 @@ impl Processor {
         msg!("sol price: ({} +/- {}) x 10^{}", sol_price_value, sol_price_error, sol_price_struct.expo);
 
         let mut seed_values = SeedStruct { seed_prices : [0; 9] };
-        seed_values.seed_prices[0] = Self::shift_seed(Self::shift_seed(btc_price_value + btc_price_error));
-        seed_values.seed_prices[1] = Self::shift_seed(Self::shift_seed(btc_price_value));
-        seed_values.seed_prices[2] = Self::shift_seed(Self::shift_seed(btc_price_value - btc_price_error));
 
-        seed_values.seed_prices[3] = Self::shift_seed(Self::shift_seed(eth_price_value + eth_price_error));
-        seed_values.seed_prices[4] = Self::shift_seed(Self::shift_seed(eth_price_value));
-        seed_values.seed_prices[5] = Self::shift_seed(Self::shift_seed(eth_price_value - eth_price_error));
+        let mut seed :  u64 = 0;
+        match meta.method {
+            SeedMethod::ShiftMurmur => {
+                msg!("Generating seed using ShiftMurmur");    
+                seed_values.seed_prices[0] = Self::shift_seed(Self::shift_seed(btc_price_value + btc_price_error));
+                seed_values.seed_prices[1] = Self::shift_seed(Self::shift_seed(btc_price_value));
+                seed_values.seed_prices[2] = Self::shift_seed(Self::shift_seed(btc_price_value - btc_price_error));
 
-        seed_values.seed_prices[6] = Self::shift_seed(Self::shift_seed(sol_price_value + sol_price_error));
-        seed_values.seed_prices[7] = Self::shift_seed(Self::shift_seed(sol_price_value));
-        seed_values.seed_prices[8] = Self::shift_seed(Self::shift_seed(sol_price_value - sol_price_error));
+                seed_values.seed_prices[3] = Self::shift_seed(Self::shift_seed(eth_price_value + eth_price_error));
+                seed_values.seed_prices[4] = Self::shift_seed(Self::shift_seed(eth_price_value));
+                seed_values.seed_prices[5] = Self::shift_seed(Self::shift_seed(eth_price_value - eth_price_error));
 
-        let mut vec_to_hash = unsafe{Self::any_as_u8_slice(&seed_values)};
-        let h = murmur3_x64_128(&mut vec_to_hash, 0).unwrap();
+                seed_values.seed_prices[6] = Self::shift_seed(Self::shift_seed(sol_price_value + sol_price_error));
+                seed_values.seed_prices[7] = Self::shift_seed(Self::shift_seed(sol_price_value));
+                seed_values.seed_prices[8] = Self::shift_seed(Self::shift_seed(sol_price_value - sol_price_error));
 
-        // we can take our 128bit number and get two 64bit values
-        let lower  = u64::try_from(h & 0xFFFFFFFFFFFFFFFF).unwrap();
-        let upper  = u64::try_from((h >> 64) & 0xFFFFFFFFFFFFFFFF).unwrap();
+                let mut vec_to_hash = unsafe{Self::any_as_u8_slice(&seed_values)};
+                let h = murmur3_x64_128(&mut vec_to_hash, 0).unwrap();
 
-        let seed = lower ^ upper;
+                // we can take our 128bit number and get two 64bit values
+                let lower  = u64::try_from(h & 0xFFFFFFFFFFFFFFFF).unwrap();
+                let upper  = u64::try_from((h >> 64) & 0xFFFFFFFFFFFFFFFF).unwrap();
+
+                seed = lower ^ upper;
+            }
+            SeedMethod::SHA256Hash => {
+                msg!("Generating seed using SHA256 hash");
+                seed_values.seed_prices[0] = btc_price_value + btc_price_error;
+                seed_values.seed_prices[1] = btc_price_value;
+                seed_values.seed_prices[2] = btc_price_value - btc_price_error;
+        
+                seed_values.seed_prices[3] = eth_price_value + eth_price_error;
+                seed_values.seed_prices[4] = eth_price_value;
+                seed_values.seed_prices[5] = eth_price_value - eth_price_error;
+        
+                seed_values.seed_prices[6] = sol_price_value + sol_price_error;
+                seed_values.seed_prices[7] = sol_price_value;
+                seed_values.seed_prices[8] = sol_price_value - sol_price_error;
+        
+                let vec_to_hash = unsafe{Self::any_as_u8_slice(&seed_values)};
+                let hash= &(Sha256::new()
+                .chain_update(vec_to_hash)
+                .finalize()[..32]);
+        
+                let hash_slice = &hash[0..8];
+                seed = u64::from_le_bytes(hash_slice.try_into().expect("slice with incorrect length"));
+            }
+            SeedMethod::None => {
+                msg!("Not generating seed to get baseline cost");
+            }
+        }
+
         let seed_double = Self::generate_random_f64(seed);
         msg!("final seed: {} => {}", seed, seed_double);
 
- 
         Ok(())
     }
 }
