@@ -1,0 +1,18 @@
+[package]
+name = "charity_ico_v2"
+version = "1.0.0"
+edition = "2021"
+license = "WTFPL"
+publish = false
+
+[dependencies]
+solana-program = "1.11.1"
+thiserror = "1.0.24"
+spl-token = {version = "3.3.0", features = ["no-entrypoint"]}
+arrayref = "0.3.6"
+borsh = "0.9.3"
+spl-associated-token-account = {version = "1.0.5", features = ["no-entrypoint"]}
+enum-map = "1.1.1"
+
+[lib]
+crate-type = ["cdylib", "lib"]
