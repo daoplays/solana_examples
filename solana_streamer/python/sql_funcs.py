@@ -35,7 +35,8 @@ def create_table(conn):
 	create_signatures_table = """ CREATE TABLE IF NOT EXISTS signatures (
 		id int PRIMARY_KEY,
 		block_slot int NOT NULL,
-		choice string NOT NULL); """
+		choice string NOT NULL,
+        bid_amount int NOT NULL); """
 		
 	try:
 		c = conn.cursor()
@@ -51,8 +52,8 @@ def insert_rows(conn, rows):
 	:param row:
 	:return: project id
 	"""
-	sql = ''' INSERT INTO signatures(id,block_slot,choice)
-	      VALUES(?,?,?) '''
+	sql = ''' INSERT INTO signatures(id,block_slot,choice,bid_amount)
+	      VALUES(?,?,?,?) '''
 	cur = conn.cursor()
 	cur.execute("begin")
 	for row in rows:
