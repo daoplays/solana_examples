@@ -2,40 +2,17 @@ pub mod state;
 
 use std::env;
 use std::str::FromStr;
-use crate::state::{Result};
+use crate::state::{Result, Choice, ChoiceData, ChoiceInstruction};
 
 use solana_client::rpc_client::RpcClient;
 use solana_program::{pubkey::Pubkey};
 use solana_sdk::{
-    signature::Keypair, signer::Signer,
-    instruction::{AccountMeta, Instruction},
+    signer::Signer,
+    instruction::{Instruction},
     transaction::Transaction, signer::keypair::read_keypair_file,
 };
-use borsh::{BorshDeserialize, BorshSerialize};
 use solana_transaction_status::UiTransactionEncoding;
 
-#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
-pub enum ChoiceInstruction {
-
-    // MakeChoice expects only one account, the user of the program which should be signed
-    MakeChoice {
-        choice_data: ChoiceData
-    }
-}
-
-#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
-pub enum Choice {
-    A,
-    B,
-    C,
-    D
-}
-
-#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
-pub struct ChoiceData {
-    pub choice : Choice,
-    pub bid_amount : u64
-}
 
 fn get_choice_from_int(index: u8) -> Choice {
     if index == 0 {
@@ -45,11 +22,11 @@ fn get_choice_from_int(index: u8) -> Choice {
         return Choice::B;
     }
     else  if index == 2 {
-            return Choice::C;
-    } else {
+        return Choice::C;
+    } 
+    else {
         return Choice::D;
     }
-
 }
 
 const URL: &str = "https://api.devnet.solana.com";
@@ -92,7 +69,6 @@ fn make_choice(key_file: &String, choice: Choice, amount : u64) ->Result<()> {
         program,
         &ChoiceInstruction::MakeChoice{choice_data : choice_data},
         vec![
-            AccountMeta::new(wallet.pubkey(), true)
         ],
     );
 
