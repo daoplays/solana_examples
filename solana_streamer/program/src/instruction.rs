@@ -8,7 +8,6 @@ use crate::state::{ChoiceData};
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum ChoiceInstruction {
 
-    // MakeChoice expects only one account, the user of the program which should be signed
     MakeChoice {
         choice_data: ChoiceData
     }
