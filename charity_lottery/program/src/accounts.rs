@@ -1,6 +1,5 @@
 use spl_associated_token_account::get_associated_token_address;
 use solana_program::{pubkey::Pubkey, declare_id};
-use std::str::FromStr;
 // functions to calculate expected public keys
 
 mod btc_oracle {

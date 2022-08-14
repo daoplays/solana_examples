@@ -1,5 +1,5 @@
 use std::str::FromStr;
-use crate::state::{StateEnum, get_state_index, Charity, CharityData, get_charity_size, BidderData, get_bid_status_size, BidValues};
+use crate::state::{StateEnum, get_state_index, Charity, CharityData, BidderData, BidValues, MAX_WINNERS, TOKENS_WON, WinnersKeys, BID_BLOCK, N_BID_BLOCKS, BidTimes};
 use crate::instruction::{InitMeta};
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::native_token::LAMPORTS_PER_SOL;
@@ -151,15 +151,17 @@ impl Processor {
             token_program_account_info
         )?;
 
-        utils::transfer_tokens(
-            metadata.amount,
-            token_source_account_info,
-            program_token_account_info,
-            funding_account_info,
-            token_program_account_info,
-            bump_seed
-    
-        )?;
+        if metadata.amount > 0 {
+            utils::transfer_tokens(
+                metadata.amount,
+                token_source_account_info,
+                program_token_account_info,
+                funding_account_info,
+                token_program_account_info,
+                bump_seed
+        
+            )?;
+        }
 
         // now just initialise the prev_selected_time field of the state to clock now
         let clock = Clock::get()?;
@@ -168,53 +170,169 @@ impl Processor {
         let prev_time_idx = get_state_index(StateEnum::PrevSelectionTime);
         current_time.serialize(&mut &mut program_data_account_info.data.borrow_mut()[prev_time_idx.0..prev_time_idx.1])?;  
 
-        let total_bid_idx = get_state_index(StateEnum::TotalBidAmount);
-        0u64.serialize(&mut &mut program_data_account_info.data.borrow_mut()[total_bid_idx.0..total_bid_idx.1])?;  
-
-        let n_bidders_idx = get_state_index(StateEnum::NBidders);
-        0u32.serialize(&mut &mut program_data_account_info.data.borrow_mut()[n_bidders_idx.0..n_bidders_idx.1])?;  
-
-        let bid_index_idx = get_state_index(StateEnum::BidIndex);
-        0usize.serialize(&mut &mut program_data_account_info.data.borrow_mut()[bid_index_idx.0..bid_index_idx.1])?;
-
-
-        for bid_index in 0..100 {
-            let bid_idx = get_state_index(StateEnum::BidAmounts {index: bid_index});
-            0u64.serialize(&mut &mut program_data_account_info.data.borrow_mut()[bid_idx.0..bid_idx.1])?; 
-
-            let key_idx = get_state_index(StateEnum::BidKeys{index: bid_index});
-            solana_program::system_program::id().serialize(&mut &mut program_data_account_info.data.borrow_mut()[key_idx.0..key_idx.1])?;
-        }
-
         Ok(())
 
 
     }
 
     fn send_tokens(
-        _accounts: &[AccountInfo],
-        _program_id: &Pubkey,
+        accounts: &[AccountInfo],
+        program_id: &Pubkey,
     ) ->ProgramResult {
 
         msg!("in send_tokens");
 
+        let account_info_iter = &mut accounts.iter();
+
+        // first load and check all the non-winner accounts
+        let daoplays_account_info = next_account_info(account_info_iter)?;
+        let program_derived_account_info = next_account_info(account_info_iter)?;
+        let program_token_account_info = next_account_info(account_info_iter)?;
+        let program_data_account_info = next_account_info(account_info_iter)?;
+        let token_program_account_info = next_account_info(account_info_iter)?;
+
+
+        // the first account should be the funding account and should be a signer
+        if !daoplays_account_info.is_signer {
+            msg!("expected first account as signer");
+            return Err(ProgramError::MissingRequiredSignature);
+        }
+
+        // the second account is the program derived address which we can verify with find_program_address
+        let (expected_pda_key, bump_seed) = accounts::get_expected_program_address_key(program_id);
+         
+        if program_derived_account_info.key != &expected_pda_key {
+            msg!("expected second account to be PDA {}", expected_pda_key);
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        // the third account is the program's token account
+        if program_token_account_info.key != &accounts::get_expected_program_token_key(program_id) {
+            msg!("expected third account to be the program's token account {}", accounts::get_expected_program_token_key(program_id));
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        // the fifth account is the programs data account
+        if program_data_account_info.key != &accounts::get_expected_data_account_key(program_id) {
+            msg!("expected fifth account to be program data account {}", accounts::get_expected_data_account_key(program_id));
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        // the sixth account is the token_program
+        if token_program_account_info.key != &spl_token::id() {
+            msg!("expected sixth account to be the token program {}", spl_token::id());
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        
+        // now check how many winners we expect and make sure the keys match the program data
+        let n_winners_idx = get_state_index(StateEnum::NWinners);
+        let n_winners = u8::try_from_slice(&program_data_account_info.data.borrow()[n_winners_idx.0..n_winners_idx.1])?;
+
+        if n_winners == 0 {
+            msg!("No winners selected, exiting send_tokens");
+            return Ok(());
+        }
+
+        msg!("have {} winners to send tokens to", n_winners);
+
+        // get the winner's account info
+        let mut winners_account_info : Vec<&AccountInfo> = Vec::new();
+        for _w_idx in 0..n_winners {
+            winners_account_info.push(next_account_info(account_info_iter)?);
+        }
+
+        let winners_key_idx = get_state_index(StateEnum::Winners { index: 0 });
+        let expected_winners = WinnersKeys::try_from_slice(&program_data_account_info.data.borrow()[winners_key_idx.0..winners_key_idx.0 + 32 * MAX_WINNERS])?;
+
+        // check the winners sent are what we expect
+        for w_idx in 0..(n_winners as usize) {
+            msg!("winner {} : {}", w_idx, expected_winners.keys[w_idx].to_string());
+
+            if expected_winners.keys[w_idx as usize] != *winners_account_info[w_idx].key {
+                msg!("expected winner {} to have key {}", w_idx, winners_account_info[w_idx].key);
+                return Err(ProgramError::InvalidAccountData);
+            }
+
+            // also check none of the winners are the system program which would indicate we have arrived here too early
+            if *winners_account_info[w_idx].key == solana_program::system_program::id() {
+                msg!("winner {} has system program key {}", w_idx, winners_account_info[w_idx].key);
+                return Err(ProgramError::InvalidAccountData);
+            }
+        }
+
+        // finally check that the remaining entries in the winners data vec are the system program id
+        for w_idx in (n_winners as usize)..MAX_WINNERS {
+            msg!("winner {} : {}", w_idx, expected_winners.keys[w_idx as usize].to_string());
+
+            if expected_winners.keys[w_idx] != solana_program::system_program::id() {
+                msg!("expected winner {} to have key {}", w_idx, solana_program::system_program::id());
+                return Err(ProgramError::InvalidAccountData);
+            }
+        }
+
+
+        // now we can transfer the tokens
+
+        for w_idx in 0..(n_winners as usize) {
+
+            utils::transfer_tokens(
+                TOKENS_WON,
+                program_token_account_info,
+                winners_account_info[w_idx],
+                program_derived_account_info,
+                token_program_account_info,
+                bump_seed
+        
+            )?;
+        }
+
+        // finally just reset the n_winners value to zero so we can select new winners again
+        // and reset all the winners keys to their default
+        for current_winner in 0..MAX_WINNERS {
+
+            let winner_idx = get_state_index(StateEnum::Winners{index: current_winner});
+            solana_program::system_program::id().serialize(&mut &mut program_data_account_info.data.borrow_mut()[winner_idx.0..winner_idx.1])?; 
+
+        }
+
+        0u8.serialize(&mut &mut program_data_account_info.data.borrow_mut()[n_winners_idx.0..n_winners_idx.1])?;
+
+        // as a sanity check  make sure the bidder data is still correct
+
+        // calculate the total bid amount and number of bidders at this time
+        let update = utils::get_bid_state(i64::MAX, program_data_account_info)?;
+        let n_bidders = update.0;
+        let total_bid = update.1;
+
+        let n_bidders_idx = get_state_index(StateEnum::NBidders);
+        let total_bid_idx = get_state_index(StateEnum::TotalBidAmount);
+
+        let current_n_bidders =  u32::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
+        let current_total_bid =  u64::try_from_slice(&program_data_account_info.data.borrow()[total_bid_idx.0..total_bid_idx.1])?;
+
+        // check these agree
+
+        if n_bidders != current_n_bidders || total_bid != current_total_bid {
+
+            msg!("bid data is out of sync: {} {} {} {}", n_bidders, current_n_bidders, total_bid, current_total_bid);
+            
+            n_bidders.serialize(&mut &mut program_data_account_info.data.borrow_mut()[n_bidders_idx.0..n_bidders_idx.1])?;
+
+            total_bid.serialize(&mut &mut program_data_account_info.data.borrow_mut()[total_bid_idx.0..total_bid_idx.1])?;
+        }
+
     
         Ok(())
     }
-
 
     fn select_winners(
         accounts: &[AccountInfo],
         program_id: &Pubkey,
     ) ->ProgramResult {
 
-        msg!("in select_winners");
-        
-
+   
         // we will use 3 streams, BTC,  ETH and SOL
-
-
-        
 
         let account_info_iter = &mut accounts.iter();
 
@@ -227,18 +345,13 @@ impl Processor {
         let sol_account_info = next_account_info(account_info_iter)?;
 
         let program_data_account_info = next_account_info(account_info_iter)?;
+        let program_token_account_info = next_account_info(account_info_iter)?;
 
 
         // the first account should be the funding account and should be a signer
         if !funding_account_info.is_signer {
             msg!("expected first account as signer");
             return Err(ProgramError::MissingRequiredSignature);
-        }
-
-        // only we should be able to call this function
-        if funding_account_info.key != &accounts::get_expected_daoplays_key() {
-            msg!("expected first account to be a daoplays account  {}", accounts::get_expected_daoplays_key());
-            return Err(ProgramError::InvalidAccountData);
         }
 
         // check the accounts match what we expect
@@ -255,18 +368,71 @@ impl Processor {
             return Err(ProgramError::InvalidAccountData);
         }
 
+        // the last account should be the programs token address
+        if program_token_account_info.key != &accounts::get_expected_program_token_key(program_id)
+        { 
+            msg!("expected sixth account to be the programs token account {}", accounts::get_expected_program_token_key(program_id));
+            return Err(ProgramError::InvalidAccountData); 
+        }
 
         // first check we should actually be here
-        let select_winners_idx = get_state_index(StateEnum::SelectWinners);
-        let should_select = bool::try_from_slice(&program_data_account_info.data.borrow()[select_winners_idx.0..select_winners_idx.1])?;
+        // if we have already chosen winners then we don't need to do anything
 
-        let n_bidders_idx = get_state_index(StateEnum::NBidders);
-        let mut n_bidders = u32::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
+        let winners_key_idx = get_state_index(StateEnum::Winners { index: 0 });
+        let expected_winners = WinnersKeys::try_from_slice(&program_data_account_info.data.borrow()[winners_key_idx.0..winners_key_idx.0 + 32 * MAX_WINNERS])?;
 
-        if !should_select || n_bidders == 0 {
-            msg!("No need to select winners, exiting {} {}", should_select, n_bidders);
+        if expected_winners.keys[0] != solana_program::system_program::id() {
+            msg!("winner 0 has already been set: {}, no need to pick winners", expected_winners.keys[0]);
             return Ok(());
         }
+
+        // update the prev_selected_time field of the state to clock now
+        let clock = Clock::get()?;
+        let current_time = clock.unix_timestamp;
+        let threshold_time = current_time - 2;
+
+        // get the current total bid and n_bidders so we can update this later
+        let n_bidders_idx = get_state_index(StateEnum::NBidders);
+        let total_bid_idx = get_state_index(StateEnum::TotalBidAmount);
+
+        let mut n_bidders =  u32::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
+        let mut total_bid =  u64::try_from_slice(&program_data_account_info.data.borrow()[total_bid_idx.0..total_bid_idx.1])?;
+        
+        // for selecting winners we only include bids that were made up to a couple of seconds ago
+        // and so want to find the total bid amount of just those
+        let update = utils::get_bid_state(threshold_time, program_data_account_info)?;
+        let mut valid_n_bidders = update.0;
+        let mut valid_total_bid = update.1;
+
+   
+        // check to see if now is a good time to choose winners
+        let n_winners = utils::check_winners_state(
+            valid_n_bidders, 
+            program_data_account_info,
+            program_token_account_info
+        )?;
+        
+        msg!("check bids : {} {}, bid totals {} {} winners {}", valid_n_bidders, n_bidders, utils::to_sol(valid_total_bid), utils::to_sol(total_bid), n_winners);
+
+        // if it is still zero though then we should just exit
+        if n_winners == 0 || valid_n_bidders == 0 {
+            msg!("No need to select winners, exiting {} {}", n_winners, valid_n_bidders);
+            return Ok(());
+        }
+
+        if n_winners > MAX_WINNERS as u8 {
+            msg!("error: have too many winners {} > {}", n_winners, MAX_WINNERS);
+            return Ok(());
+        }
+
+        if n_winners as u32 > valid_n_bidders {
+            msg!("error: n_winners {} > n_bidders {}", n_winners, valid_n_bidders);
+            return Ok(());
+        }
+
+        // update n_winners
+        let n_winners_idx = get_state_index(StateEnum::NWinners);
+        n_winners.serialize(&mut &mut program_data_account_info.data.borrow_mut()[n_winners_idx.0..n_winners_idx.1])?;
 
         // generate the seed for selecting winners
         let mut pyth_random = randoms::generate_seed(
@@ -276,125 +442,126 @@ impl Processor {
         );
 
 
-        let n_winners: u8 = 10;// (n_bidders / 10 + 1) as u8;
-
-        let mut ran_vec = vec![0.0f64; 128];
-        for winner in 0..128 {
+        let mut ran_vec : Vec<f64> = Vec::new();
+        for _winner in 0..n_winners {
             pyth_random = randoms::shift_seed(pyth_random);
-            let random_f64 =  randoms::generate_random(pyth_random);
+            let random_f64 = randoms::generate_random(pyth_random);
 
-            ran_vec[winner] = random_f64;
+            ran_vec.push(random_f64);
+            //msg!("random {} : {}", winner, random_f64);
 
         }
 
         ran_vec.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
 
-        msg!("bidders : {} winners : {}", n_bidders, n_winners);
+        // get the starting state
+        let mut cumulative_total : u64 = 0;
+        let mut winners_found : [bool; MAX_WINNERS] = [false; MAX_WINNERS];
 
-        let n_winners_idx = get_state_index(StateEnum::NWinners);
-        n_winners.serialize(&mut &mut program_data_account_info.data.borrow_mut()[n_winners_idx.0..n_winners_idx.1])?;  
+        for idx in 0..N_BID_BLOCKS {
 
-        // get the total bid so we can scale our randoms
-        let total_bid_idx = get_state_index(StateEnum::TotalBidAmount);
-        let mut total_bid = u64::try_from_slice(&program_data_account_info.data.borrow()[total_bid_idx.0..total_bid_idx.1])?; 
+            let bid_idx = get_state_index(StateEnum::BidAmounts {index: idx*BID_BLOCK});
+            let mut bids = BidValues::try_from_slice(&program_data_account_info.data.borrow()[bid_idx.0..bid_idx.0 + BID_BLOCK*8])?; 
 
-
-        msg!("total: {}", (total_bid as f64) / (LAMPORTS_PER_SOL as f64));
-
-        
-
-        for winner in 0..n_winners {
-
-            let mut cumulative_total : u64 = 0;
-            let random_f64 = ran_vec[winner as usize];
-            
-
-            let threshold: u64 = ((total_bid as f64) * random_f64) as u64;
-
-            msg!("Have total bid {} random {} threshold for winner {} of {}", (total_bid as f64)/(LAMPORTS_PER_SOL as f64), random_f64, (threshold as f64) / (LAMPORTS_PER_SOL as f64), winner);
-
-            for idx in 0..8 {
-
-                let bid_idx = get_state_index(StateEnum::BidAmounts {index: idx*128});
-   
-                let bids = BidValues::try_from_slice(&program_data_account_info.data.borrow()[bid_idx.0..bid_idx.0+256*8])?; 
-
-                let mut found_winner = false;
-                for bid_index in 0..256 {
-
-                    let current_bid = bids.bid_amounts[bid_index];
-                    
-                    cumulative_total += current_bid;
-
-                    if cumulative_total > threshold {
-
-                        found_winner = true;
-                        let total_index = idx * 128 + bid_index;
-                        msg!("Have a winner: {} {}", total_index, (cumulative_total as f64) / (LAMPORTS_PER_SOL as f64));
+            let time_idx = get_state_index(StateEnum::BidTimes {index: idx*BID_BLOCK});
+            let times = BidTimes::try_from_slice(&program_data_account_info.data.borrow()[time_idx.0..time_idx.0 + BID_BLOCK*8])?; 
     
-                        // get the winners key from the program data account
-                        let key_idx = get_state_index(StateEnum::BidKeys{index: bid_index});
-                        let winners_key = Pubkey::try_from_slice(&program_data_account_info.data.borrow()[key_idx.0..key_idx.1])?; 
+            for current_winner in 0..n_winners {
 
+                if winners_found[current_winner as usize] {
+                    continue;
+                }
+
+                // update the threshold
+                let random_f64 = ran_vec[current_winner as usize];
+                let threshold = ((valid_total_bid as f64) * random_f64) as u64;
+
+                //msg!("check for winner {} block {} total {} threshold {} current total {}", current_winner, idx,utils::to_sol(valid_total_bid), utils::to_sol(threshold),  utils::to_sol(cumulative_total));
+
+                let mut sub_total : u64 = cumulative_total;
+                for bid_index in 0..BID_BLOCK {
+
+                    // check if this is within the time threshold
+                    if times.bid_times[bid_index] > threshold_time {
+                        continue;
+                    }
+                    
+                    let current_bid =  bids.bid_amounts[bid_index];
+                    sub_total += current_bid;
+        
+                    if sub_total > threshold {
+
+                        winners_found[current_winner as usize] = true;
+        
+                        let winner_index = idx * BID_BLOCK + bid_index;
+        
+                        msg!("Have winner {}: idx {}, random = {},  {} > {}, bid {}", current_winner, winner_index, random_f64, (sub_total as f64) / (LAMPORTS_PER_SOL as f64), (threshold as f64) / (LAMPORTS_PER_SOL as f64), (current_bid as f64) / (LAMPORTS_PER_SOL as f64));
+
+                        // get the winners key from the program data account
+                        let key_idx = get_state_index(StateEnum::BidKeys{index: winner_index});
+                        let winners_key = Pubkey::try_from_slice(&program_data_account_info.data.borrow()[key_idx.0..key_idx.1])?; 
+        
                         // and insert it into the winners array
-                        let winner_idx = get_state_index(StateEnum::Winners{index: winner.try_into().unwrap()});
-                        winners_key.serialize(&mut &mut program_data_account_info.data.borrow_mut()[winner_idx.0..winner_idx.1])?;
-/*
+                        let winner_idx = get_state_index(StateEnum::Winners{index: current_winner as usize});
+                        winners_key.serialize(&mut &mut program_data_account_info.data.borrow_mut()[winner_idx.0..winner_idx.1])?; 
+
+    
                         // now clear the winners data in the program data account
                         // start by zero'ing their bid
-                        // let bid_idx = get_state_index(StateEnum::BidAmounts {index: bid_index});
-                        // 0u64.serialize(&mut &mut program_data_account_info.data.borrow_mut()[bid_idx.0..bid_idx.1])?;  
+                        let win_bid_idx = get_state_index(StateEnum::BidAmounts {index: winner_index});
+                        0u64.serialize(&mut &mut program_data_account_info.data.borrow_mut()[win_bid_idx.0..win_bid_idx.1])?;  
+
+                        // then the bid time
+                        let win_time_idx = get_state_index(StateEnum::BidTimes{index: winner_index});
+                        0i64.serialize(&mut &mut program_data_account_info.data.borrow_mut()[win_time_idx.0..win_time_idx.1])?;  
 
                         // and then clear their key
-                        //solana_program::system_program::id().serialize(&mut &mut program_data_account_info.data.borrow_mut()[key_idx.0..key_idx.1])?;
-
+                        solana_program::system_program::id().serialize(&mut &mut program_data_account_info.data.borrow_mut()[key_idx.0..key_idx.1])?;
+     
                         // as a sanity check make sure current bid is less than total_bid
-                        if current_bid > total_bid {
-                            msg!("Current bid is greater than total bid, this shouldn't happen {} > {}", current_bid, total_bid);
+                        if current_bid > valid_total_bid {
+                            msg!("Current bid is greater than total bid, this shouldn't happen {} > {}", current_bid, valid_total_bid);
                             return Ok(());
                         }
 
                         // finally decrement the number of bidders, and the total bid amount
+                        valid_n_bidders -= 1;
+                        valid_total_bid -= current_bid;
+
                         n_bidders -= 1;
                         total_bid -= current_bid;
 
-    */
+                        bids.bid_amounts[bid_index] = 0;
+
                         break;
 
-
                     }
-
-                    
                 }
-                if found_winner {
+
+                // if this winner wasn't found in this block, move onto the next block
+                if winners_found[current_winner as usize] == false {
+
+                    cumulative_total = sub_total;
+                   
                     break;
                 }
-
             }
         }
 
-        return Ok(());
-    /*
-
-        // update n_bidders
+        // update number of bidders
+        let n_bidders_idx = get_state_index(StateEnum::NBidders);
         n_bidders.serialize(&mut &mut program_data_account_info.data.borrow_mut()[n_bidders_idx.0..n_bidders_idx.1])?;
 
         // update total_bid_amount
+        let total_bid_idx = get_state_index(StateEnum::TotalBidAmount);
         total_bid.serialize(&mut &mut program_data_account_info.data.borrow_mut()[total_bid_idx.0..total_bid_idx.1])?;
 
-        // update the select_winners bool to false again
-        false.serialize(&mut &mut program_data_account_info.data.borrow_mut()[select_winners_idx.0..select_winners_idx.1])?;
-
-        // update the prev_selected_time field of the state to clock now
-        let clock = Clock::get()?;
-        let current_time = clock.unix_timestamp;
 
         let prev_time_idx = get_state_index(StateEnum::PrevSelectionTime);
         current_time.serialize(&mut &mut program_data_account_info.data.borrow_mut()[prev_time_idx.0..prev_time_idx.1])?;  
 
-     */
-    
+     
         Ok(())
     }
     
@@ -555,9 +722,9 @@ impl Processor {
         )?;
 
 
-        // update the data
+        // update the charity stats data
         let charity_data_idx = get_state_index(StateEnum::CharityData);
-        msg!("get charity data {} {} {} {}", charity_data_idx.0, charity_data_idx.1, charity_data_idx.1 - charity_data_idx.0, get_charity_size());
+        //msg!("get charity data {} {} {} {}", charity_data_idx.0, charity_data_idx.1, charity_data_idx.1 - charity_data_idx.0, get_charity_size());
         let mut current_state = CharityData::try_from_slice(&program_data_account_info.data.borrow()[charity_data_idx.0..charity_data_idx.1])?;
 
         // calculate the current average to see if this individual has paid more
@@ -570,8 +737,6 @@ impl Processor {
         current_state.paid_total += total_paid;
         current_state.n_donations += 1;
 
-        msg!("Updating current state: {} {} {} {}", current_state.charity_totals[charity_index], current_state.donated_total, current_state.paid_total,  current_state.n_donations);
-
         current_state.serialize(&mut &mut program_data_account_info.data.borrow_mut()[charity_data_idx.0..charity_data_idx.1])?;
         
 
@@ -583,87 +748,142 @@ impl Processor {
             bidder_bump_seed
         )?;
 
-        // get the current total so that we can increment it
-        let bid_total_idx = get_state_index(StateEnum::TotalBidAmount);
+        // we will need to update n_bidders and total_bid so get them now
+        let n_bidders_idx = get_state_index(StateEnum::NBidders);
+        let total_bid_idx = get_state_index(StateEnum::TotalBidAmount);
 
-        let mut current_bid_total = u64::try_from_slice(&program_data_account_info.data.borrow()[bid_total_idx.0..bid_total_idx.1])?;
+        let mut n_bidders =  u32::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
+        let mut total_bid =  u64::try_from_slice(&program_data_account_info.data.borrow()[total_bid_idx.0..total_bid_idx.1])?;
 
-        msg!("current bid total: {} {}", (current_bid_total as f64) / (LAMPORTS_PER_SOL as f64), (total_paid as f64) / (LAMPORTS_PER_SOL as f64));
-        current_bid_total += total_paid;
-
-        current_bid_total.serialize(&mut &mut program_data_account_info.data.borrow_mut()[bid_total_idx.0..bid_total_idx.1])?;
-
-
-        // get the bid index from the bidders account
-        let bid_status = BidderData::try_from_slice(&bidder_data_account_info.data.borrow()[..])?;
-        msg!("{}", bid_status.index);
 
         let mut new_bid = total_paid;
 
-        let bid_index = bid_status.index;
+        // update total_bid with new_bid
+        total_bid += new_bid;
+
+        
+        // get the current time as a point of comparison for finding the oldest bid, and for the bids time
+        let clock = Clock::get()?;
+        let current_time = clock.unix_timestamp;
+
+        // get the bid index from the bidders account
+        let bidder_data = BidderData::try_from_slice(&bidder_data_account_info.data.borrow()[..])?;
+
+
+        // when adding the bid to the program state we have three possibilities:
+        // i) there is already a bid and we just accumulate
+        // ii) there is no bid but there is an empty spot
+        // iii) there is no bid and no empty spot, so we replace the oldest bid
+
+        // start by checking if a bid exists
+        let mut bidders_index = bidder_data.index;
 
         // check the public key that is present in the data account at bid_index
-        let key_idx = get_state_index(StateEnum::BidKeys{index: bid_index});
+        let key_idx = get_state_index(StateEnum::BidKeys{index: bidders_index});
         let key = Pubkey::try_from_slice(&program_data_account_info.data.borrow()[key_idx.0..key_idx.1])?;
 
-        msg!("compare keys {} {}", key, bidder_token_account_info.key);
-
+        msg!("compare keys {} {} as position  {}", key, bidder_token_account_info.key, bidder_data.index);
+        
         // if the keys match then we accumulate the bid
         // otherwise it must be a new bid
         if key == *bidder_token_account_info.key {
 
             msg!("Existing bid found, accumulating amount");
             // get the old bid
-            let bid_idx = get_state_index(StateEnum::BidAmounts{index: bid_index});
-            let bid =  u64::try_from_slice(&program_data_account_info.data.borrow()[bid_idx.0..bid_idx.1])?;
+            let old_bid_idx = get_state_index(StateEnum::BidAmounts{index: bidders_index});
+            let old_bid =  u64::try_from_slice(&program_data_account_info.data.borrow()[old_bid_idx.0..old_bid_idx.1])?;
                             
-            msg!("have old bid {}", bid);
-            new_bid += bid;
-
-            // and then update it
-            new_bid.serialize(&mut &mut program_data_account_info.data.borrow_mut()[bid_idx.0..bid_idx.1])?; 
+            msg!("have old bid {} + {} -> {}", old_bid, new_bid, new_bid + old_bid);
+            new_bid += old_bid;
+ 
         }
 
         else {
+
+            // if they were a new bidder add their bid to the ladder, first just try and find the first open spot
+            msg!("Have new bidder");
+            let mut found_space = false;
+             
+            // if there isn't a space we will want to replace the oldest bid
+            // so we find  that in the same loop
+            let mut oldest_bid_index : usize = 0;
+            let mut oldest_time = current_time + 1;
+            for i in 0..N_BID_BLOCKS {
+
+
+                let time_idx = get_state_index(StateEnum::BidTimes {index: i * BID_BLOCK});
+                let times = BidTimes::try_from_slice(&program_data_account_info.data.borrow()[time_idx.0..time_idx.0 + BID_BLOCK * 8])?; 
         
-            // if they were a new bidder add their bid to the ladder
-            let bid_index_idx = get_state_index(StateEnum::BidIndex);
-            let mut bid_index = usize::try_from_slice(&program_data_account_info.data.borrow()[bid_index_idx.0..bid_index_idx.1])?;  
+                for j in 0..BID_BLOCK {
 
-            msg!("current bid position is {}", bid_index);
+                    let total_index = i * BID_BLOCK + j;
 
-            let new_bid_idx = get_state_index(StateEnum::BidAmounts{index: bid_index});
-            let new_key_idx = get_state_index(StateEnum::BidKeys{index: bid_index});
+                    // if the bid time is zero that indicates we have find an empty slot, so break out of the loop
+                    if times.bid_times[j] == 0 {
+                        bidders_index = total_index;
+                        found_space = true;
+                        break
+                    }
 
-            //check if bidder's pubkey is already present
+                    // otherwise check if this is older than the oldest known bid so far
+                    if times.bid_times[j] < oldest_time {
+                        oldest_bid_index = total_index;
+                        oldest_time = times.bid_times[j];
+                    }
+                }
+
+                if found_space {
+                    break;
+                }
+            }
+
+            
+  
+            // if there was no open spot we overwrite the oldest bid
+            if !found_space {
+
+                bidders_index = oldest_bid_index;
+                msg!("using oldest bid position in {}", bidders_index);
+
+                // if we are overwriting we need to subtract bid_amount and reduce n_bidders by one
+                let existing_bid_idx = get_state_index(StateEnum::BidAmounts{index: bidders_index});
+                let existing_bid = u64::try_from_slice(&program_data_account_info.data.borrow()[existing_bid_idx.0..existing_bid_idx.1])?;
+                total_bid -= existing_bid;
+                n_bidders -=1;
+
+            }
+
+            // for a new bid we need to add the public key
             let bidder_token_pubkey = *bidder_token_account_info.key;
+            let new_key_idx = get_state_index(StateEnum::BidKeys{index: bidders_index});
         
-            // serialise the new bid
-            new_bid.serialize(&mut &mut program_data_account_info.data.borrow_mut()[new_bid_idx.0..new_bid_idx.1])?; 
-
             // serialise the new account
             bidder_token_pubkey.serialize(&mut &mut program_data_account_info.data.borrow_mut()[new_key_idx.0..new_key_idx.1])?;  
 
             // update their bid data
-            let new_bidder_data = BidderData {index: bid_index};
+            let new_bidder_data = BidderData {index: bidders_index};
             new_bidder_data.serialize(&mut &mut bidder_data_account_info.data.borrow_mut()[..])?;
-            
-            // update bid index
-            bid_index = (bid_index + 1)%1024;
-            msg!("update bid index: {}", bid_index);
-            bid_index.serialize(&mut &mut program_data_account_info.data.borrow_mut()[bid_index_idx.0..bid_index_idx.1])?;  
 
             // update n_bidders
-            let n_bidders_idx = get_state_index(StateEnum::NBidders);
-            let mut n_bidders = u32::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
             n_bidders += 1;
-            n_bidders.serialize(&mut &mut program_data_account_info.data.borrow_mut()[n_bidders_idx.0..n_bidders_idx.1])?; 
+     
         }
 
-        // Whenever anyone presses a button or bids for tokens we check whether it is a good time to select new token winners.
-        // This uses the basic random generator, however no winners are selected at this point, we just update a bool in the program data.
-        // A separate call to the program then decides the winner using Pyth oracles to seed the random number generators.
-        utils::check_bid_state(program_data_account_info, program_token_account_info)?;
+        msg!("update bid details for position {}", bidders_index);
+
+        // insert the new bid and time into the program data
+        let new_bid_idx = get_state_index(StateEnum::BidAmounts{index: bidders_index});
+        let new_time_idx = get_state_index(StateEnum::BidTimes{index: bidders_index});
+
+        current_time.serialize(&mut &mut program_data_account_info.data.borrow_mut()[new_time_idx.0..new_time_idx.1])?;  
+        new_bid.serialize(&mut &mut program_data_account_info.data.borrow_mut()[new_bid_idx.0..new_bid_idx.1])?; 
+
+        // update total bid
+        total_bid.serialize(&mut &mut program_data_account_info.data.borrow_mut()[total_bid_idx.0..total_bid_idx.1])?; 
+
+        //  update n_bidders
+        n_bidders.serialize(&mut &mut program_data_account_info.data.borrow_mut()[n_bidders_idx.0..n_bidders_idx.1])?; 
+
 
         Ok(())
     }

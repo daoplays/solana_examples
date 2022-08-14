@@ -70,7 +70,7 @@ pub fn generate_seed<'a>(
     let mut seed_values = SeedStruct { seed_prices : [0; 9] };
 
    
-    msg!("Generating seed");    
+    //msg!("Generating seed");    
 
     seed_values.seed_prices[0] = shift_seed(shift_seed(btc_price_value + btc_price_error));
     seed_values.seed_prices[1] = shift_seed(shift_seed(btc_price_value));

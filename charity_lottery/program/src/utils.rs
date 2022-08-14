@@ -1,10 +1,11 @@
-use crate::state::{get_state_index, StateEnum, get_bid_status_size};
+use crate::state::{get_state_index, StateEnum, get_bid_status_size, TOKENS_WON, MAX_WINNERS, BID_BLOCK, N_BID_BLOCKS, BidValues, BidTimes};
 use solana_program::{
     account_info::AccountInfo,
     entrypoint::ProgramResult,
     msg,
     program::{invoke, invoke_signed},
-    program_pack::Pack, pubkey::Pubkey, rent, clock::Clock, sysvar::Sysvar
+    program_pack::Pack, pubkey::Pubkey, rent, clock::Clock, sysvar::Sysvar,
+    program_error::ProgramError, native_token::LAMPORTS_PER_SOL
 };
 use borsh::{BorshDeserialize, BorshSerialize};
 use spl_associated_token_account::instruction::create_associated_token_account;
@@ -144,38 +145,75 @@ pub fn create_token_account<'a>(
     Ok(())
 }
 
-pub fn check_bid_state<'a>(
+pub fn get_bid_state(max_time : i64, program_data_account_info : &AccountInfo) ->  Result<(u32, u64), ProgramError> {
+
+
+    // calculate the total bid amount and number of bidders at this time
+    let mut total_bid : u64 = 0;
+    let mut n_bidders : u32 = 0;
+    for idx in 0..N_BID_BLOCKS {
+        let bid_idx = get_state_index(StateEnum::BidAmounts {index: idx*BID_BLOCK});
+        let time_idx = get_state_index(StateEnum::BidTimes {index: idx*BID_BLOCK});
+
+
+        let bids = BidValues::try_from_slice(&program_data_account_info.data.borrow()[bid_idx.0..bid_idx.0 + BID_BLOCK*8])?; 
+        let times = BidTimes::try_from_slice(&program_data_account_info.data.borrow()[time_idx.0..time_idx.0 + BID_BLOCK*8])?; 
+
+
+        for jdx in 0..BID_BLOCK {
+            if times.bid_times[jdx] < max_time && bids.bid_amounts[jdx] > 0 {
+                total_bid += bids.bid_amounts[jdx];
+                n_bidders += 1;
+            }
+
+        }
+    }
+
+    Ok((n_bidders, total_bid))
+    
+}
+
+pub fn check_winners_state<'a>(
+    n_bidders : u32, 
     program_data_account_info : &AccountInfo<'a>,
     program_token_account_info : &AccountInfo<'a>
-) -> ProgramResult {
+) ->  Result<u8, ProgramError> {
+
+
+
+    //msg!("n bidders : {}", n_bidders);
+    // if there are no bidders then we have noone to choose
+    if n_bidders == 0 {
+        msg!("no bidders to be able to select winners");
+        return Ok(0);
+    }
 
 
     // if there aren't enough tokens available then we can't choose winners
-    let min_tokens: u64 = 100;
+    let min_tokens: u64 = TOKENS_WON;
     let program_token_account = spl_token::state::Account::unpack_unchecked(&program_token_account_info.try_borrow_data()?)?;
 
     let token_balance = program_token_account.amount;
     if token_balance < min_tokens {
         msg!("insufficient tokens in program account to select new winners: {} < {}", token_balance, min_tokens);
-        return Ok(());
+        return Ok(0);
     }
 
-    // if there are no bidders then we have noone to choose
-    let n_bidders_idx = get_state_index(StateEnum::NBidders);
-    let n_bidders = u32::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
+    let max_token_blocks = token_balance / TOKENS_WON;
 
-    if n_bidders == 0 {
-        msg!("no bidders to be able to select winners");
-        return Ok(());
+
+    // set the number of winners to the max and check if we should decrease from there
+    let mut n_winners = MAX_WINNERS as u8;
+
+    // check if we have enough token blocks for this many
+    if n_winners as u64 > max_token_blocks {
+        n_winners = max_token_blocks as u8;
     }
 
-    let select_winners_idx = get_state_index(StateEnum::SelectWinners);
-    let mut select_winners = bool::try_from_slice(&program_data_account_info.data.borrow()[select_winners_idx.0..select_winners_idx.1])?;
-
-    // if we have already said we need to select winners there is nothing else to do
-    if select_winners {
-        msg!("already waiting to select winners {}", select_winners);
-        return Ok(());
+    // finally check if we have enough bidders for this
+    let max_winners_from_bidders = n_bidders / 64 + 1;
+    if n_winners as u32 > max_winners_from_bidders {
+        n_winners = max_winners_from_bidders as u8;
     }
 
     let prev_time_idx = get_state_index(StateEnum::PrevSelectionTime);
@@ -185,22 +223,47 @@ pub fn check_bid_state<'a>(
     let current_time = clock.unix_timestamp;
     let time_passed = (current_time - prev_time_selected) as f64;
 
-    msg!("time passed: {} n_bidders {}", time_passed, n_bidders);
-    // the longer we have waited (up to a max of 5 minutes) the more likely it is that we will select winners
-    // the more bidders we have (up to the max 1024) the more likely it is that we will select winners
+    
+    // on average we expect a single bidder to wait 5 minutes before being selected
+    // we therefore calculate time_per_bidder based on the number of bidders, and number of winners being selected
+    // if this is below 10 seconds we just allow new winners to be selected so that there is less friction with large
+    // numbers of bidders
 
-    let n_bidders_frac: f64 = (n_bidders as f64) / 1024.0;
-    let waiting_secs_frac: f64 = time_passed / (5.0 * 60.0);
- 
-    let total_frac = n_bidders_frac + waiting_secs_frac;
+    let time_per_bidder = (5.0 * 60.0) / ((n_bidders as f64) / (n_winners as f64));
+    
+    msg!("time_per_bidder {} time_passed: {} n_bidders {} token_balance {} max_blocks {}", time_per_bidder, time_passed, n_bidders, token_balance, max_token_blocks);
 
-    if total_frac < 1.0 {
-        return Ok(());
+    if time_per_bidder > 10.0 && time_passed < time_per_bidder {
+        return Ok(0);
     }
 
-    msg!("Selecting new winners!");
-    select_winners = true;
-    select_winners.serialize(&mut &mut program_data_account_info.data.borrow_mut()[select_winners_idx.0..select_winners_idx.1])?;
+    msg!("Selecting {} new winners! ({} {})", n_winners, max_token_blocks, max_winners_from_bidders);
+
+    
+    Ok(n_winners)
+}
+
+pub fn update_bid_state<'a>(
+    program_data_account_info : &AccountInfo<'a>
+) -> ProgramResult {
+
+
+    // calculate the total bid amount and number of bidders at this time
+    let update = get_bid_state(i64::MAX, program_data_account_info)?;
+    let n_bidders = update.0;
+    let total_bid = update.1;
+
+    // update number of bidders
+    let n_bidders_idx = get_state_index(StateEnum::NBidders);
+    n_bidders.serialize(&mut &mut program_data_account_info.data.borrow_mut()[n_bidders_idx.0..n_bidders_idx.1])?;
+
+    // update total_bid_amount
+    let total_bid_idx = get_state_index(StateEnum::TotalBidAmount);
+    total_bid.serialize(&mut &mut program_data_account_info.data.borrow_mut()[total_bid_idx.0..total_bid_idx.1])?;
     
     Ok(())
+}
+
+pub fn to_sol(value : u64) -> f64 {
+    (value as f64) / (LAMPORTS_PER_SOL as f64)
 }
