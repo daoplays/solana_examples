@@ -2,7 +2,7 @@
 pub mod utils;
 pub mod state;
 
-use crate::state::{Result, LotteryInstruction, InitMeta, Charity, BidData, State, MAX_WINNERS};
+use crate::state::{Result, AuctionInstruction, InitMeta, Charity, BidData, State, MAX_WINNERS};
 
 use std::env;
 use std::str::FromStr;
@@ -173,7 +173,7 @@ fn create_accounts(key_file: &String, amount : u64) ->Result<()> {
 
     let instruction = Instruction::new_with_borsh(
         program,
-        &LotteryInstruction::CreateDataAccount {metadata : meta_data},
+        &AuctionInstruction::CreateDataAccount {metadata : meta_data},
         vec![
             AccountMeta::new_readonly(wallet.pubkey(), true),
             AccountMeta::new(expected_pda, false),
@@ -280,7 +280,7 @@ fn place_bid(key_file: &String, charity : Charity, amount_charity  : u64, amount
     
     let instruction = Instruction::new_with_borsh(
         program,
-        &LotteryInstruction::PlaceBid { bid_data : bid_data},
+        &AuctionInstruction::PlaceBid { bid_data : bid_data},
         vec![
             AccountMeta::new(wallet.pubkey(), true),
             AccountMeta::new(my_token_address, false),
@@ -402,7 +402,7 @@ fn select_winners(key_file: &String) ->Result<()> {
 
     let instruction = Instruction::new_with_borsh(
         program,
-        &LotteryInstruction::SelectWinners,
+        &AuctionInstruction::SelectWinners,
         vec![
             AccountMeta::new_readonly(wallet.pubkey(), true),
             AccountMeta::new(btc_key, false),
@@ -455,7 +455,7 @@ fn select_winners(key_file: &String) ->Result<()> {
 
     let send_instruction = Instruction::new_with_borsh(
         program,
-        &LotteryInstruction::SendTokens,
+        &AuctionInstruction::SendTokens,
         accounts
     );
 

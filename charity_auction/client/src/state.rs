@@ -65,7 +65,7 @@ pub struct BidData {
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
-pub enum LotteryInstruction {
+pub enum AuctionInstruction {
 
     CreateDataAccount {
         metadata : InitMeta
