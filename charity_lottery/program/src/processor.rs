@@ -164,11 +164,19 @@ impl Processor {
         }
 
         // now just initialise the prev_selected_time field of the state to clock now
-        let clock = Clock::get()?;
-        let current_time = clock.unix_timestamp;
+        
 
         let prev_time_idx = get_state_index(StateEnum::PrevSelectionTime);
-        current_time.serialize(&mut &mut program_data_account_info.data.borrow_mut()[prev_time_idx.0..prev_time_idx.1])?;  
+
+        // check if the time is uninitialized and set it to the current time if so
+        let prev_time_selected = i64::try_from_slice(&program_data_account_info.data.borrow()[prev_time_idx.0..prev_time_idx.1])?;
+
+        if prev_time_selected == 0 {
+
+            let clock = Clock::get()?;
+            let current_time = clock.unix_timestamp;
+            current_time.serialize(&mut &mut program_data_account_info.data.borrow_mut()[prev_time_idx.0..prev_time_idx.1])?;  
+        }
 
         Ok(())
 
@@ -182,10 +190,10 @@ impl Processor {
 
         msg!("in send_tokens");
 
-        let account_info_iter = &mut accounts.iter();
+        let account_info_iter = &mut accounts.iter().peekable();
 
         // first load and check all the non-winner accounts
-        let daoplays_account_info = next_account_info(account_info_iter)?;
+        let funding_account_info = next_account_info(account_info_iter)?;
         let program_derived_account_info = next_account_info(account_info_iter)?;
         let program_token_account_info = next_account_info(account_info_iter)?;
         let program_data_account_info = next_account_info(account_info_iter)?;
@@ -193,7 +201,7 @@ impl Processor {
 
 
         // the first account should be the funding account and should be a signer
-        if !daoplays_account_info.is_signer {
+        if !funding_account_info.is_signer {
             msg!("expected first account as signer");
             return Err(ProgramError::MissingRequiredSignature);
         }
@@ -239,25 +247,40 @@ impl Processor {
         // get the winner's account info
         let mut winners_account_info : Vec<&AccountInfo> = Vec::new();
         for _w_idx in 0..n_winners {
-            winners_account_info.push(next_account_info(account_info_iter)?);
+
+            if account_info_iter.peek().is_some() {
+                winners_account_info.push(next_account_info(account_info_iter)?);
+            }
+            else {
+                msg!("n_winners {} exceeds the number of accounts passed", n_winners);
+                return Ok(());
+            }
+        }
+
+        // check that was the last account
+        if account_info_iter.peek().is_some() {
+            msg!("n_winners {} is less than the number of accounts passed", n_winners);
+            return Ok(());
         }
 
         let winners_key_idx = get_state_index(StateEnum::Winners { index: 0 });
         let expected_winners = WinnersKeys::try_from_slice(&program_data_account_info.data.borrow()[winners_key_idx.0..winners_key_idx.0 + 32 * MAX_WINNERS])?;
 
         // check the winners sent are what we expect
+        // the front end may end up sending multiple requests to send tokens and we don't want the whole
+        // instruction chain to fail just because the program state has moved on
         for w_idx in 0..(n_winners as usize) {
             msg!("winner {} : {}", w_idx, expected_winners.keys[w_idx].to_string());
 
             if expected_winners.keys[w_idx as usize] != *winners_account_info[w_idx].key {
                 msg!("expected winner {} to have key {}", w_idx, winners_account_info[w_idx].key);
-                return Err(ProgramError::InvalidAccountData);
+                return Ok(());
             }
 
             // also check none of the winners are the system program which would indicate we have arrived here too early
             if *winners_account_info[w_idx].key == solana_program::system_program::id() {
                 msg!("winner {} has system program key {}", w_idx, winners_account_info[w_idx].key);
-                return Err(ProgramError::InvalidAccountData);
+                return Ok(());
             }
         }
 
@@ -267,7 +290,7 @@ impl Processor {
 
             if expected_winners.keys[w_idx] != solana_program::system_program::id() {
                 msg!("expected winner {} to have key {}", w_idx, solana_program::system_program::id());
-                return Err(ProgramError::InvalidAccountData);
+                return Ok(());
             }
         }
 
@@ -308,7 +331,7 @@ impl Processor {
         let n_bidders_idx = get_state_index(StateEnum::NBidders);
         let total_bid_idx = get_state_index(StateEnum::TotalBidAmount);
 
-        let current_n_bidders =  u32::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
+        let current_n_bidders =  u16::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
         let current_total_bid =  u64::try_from_slice(&program_data_account_info.data.borrow()[total_bid_idx.0..total_bid_idx.1])?;
 
         // check these agree
@@ -378,11 +401,11 @@ impl Processor {
         // first check we should actually be here
         // if we have already chosen winners then we don't need to do anything
 
-        let winners_key_idx = get_state_index(StateEnum::Winners { index: 0 });
-        let expected_winners = WinnersKeys::try_from_slice(&program_data_account_info.data.borrow()[winners_key_idx.0..winners_key_idx.0 + 32 * MAX_WINNERS])?;
+        let n_winners_idx = get_state_index(StateEnum::NWinners);
+        let mut n_winners = u8::try_from_slice(&program_data_account_info.data.borrow()[n_winners_idx.0..n_winners_idx.1])?;
 
-        if expected_winners.keys[0] != solana_program::system_program::id() {
-            msg!("winner 0 has already been set: {}, no need to pick winners", expected_winners.keys[0]);
+        if n_winners != 0 {
+            msg!("winners have already been selected");
             return Ok(());
         }
 
@@ -395,7 +418,7 @@ impl Processor {
         let n_bidders_idx = get_state_index(StateEnum::NBidders);
         let total_bid_idx = get_state_index(StateEnum::TotalBidAmount);
 
-        let mut n_bidders =  u32::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
+        let mut n_bidders =  u16::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
         let mut total_bid =  u64::try_from_slice(&program_data_account_info.data.borrow()[total_bid_idx.0..total_bid_idx.1])?;
         
         // for selecting winners we only include bids that were made up to a couple of seconds ago
@@ -406,7 +429,7 @@ impl Processor {
 
    
         // check to see if now is a good time to choose winners
-        let n_winners = utils::check_winners_state(
+        n_winners = utils::check_winners_state(
             valid_n_bidders, 
             program_data_account_info,
             program_token_account_info
@@ -420,18 +443,7 @@ impl Processor {
             return Ok(());
         }
 
-        if n_winners > MAX_WINNERS as u8 {
-            msg!("error: have too many winners {} > {}", n_winners, MAX_WINNERS);
-            return Ok(());
-        }
-
-        if n_winners as u32 > valid_n_bidders {
-            msg!("error: n_winners {} > n_bidders {}", n_winners, valid_n_bidders);
-            return Ok(());
-        }
-
         // update n_winners
-        let n_winners_idx = get_state_index(StateEnum::NWinners);
         n_winners.serialize(&mut &mut program_data_account_info.data.borrow_mut()[n_winners_idx.0..n_winners_idx.1])?;
 
         // generate the seed for selecting winners
@@ -440,7 +452,6 @@ impl Processor {
             eth_account_info,
             sol_account_info
         );
-
 
         let mut ran_vec : Vec<f64> = Vec::new();
         for _winner in 0..n_winners {
@@ -483,7 +494,7 @@ impl Processor {
                 for bid_index in 0..BID_BLOCK {
 
                     // check if this is within the time threshold
-                    if times.bid_times[bid_index] > threshold_time {
+                    if times.bid_times[bid_index] >= threshold_time {
                         continue;
                     }
                     
@@ -752,7 +763,7 @@ impl Processor {
         let n_bidders_idx = get_state_index(StateEnum::NBidders);
         let total_bid_idx = get_state_index(StateEnum::TotalBidAmount);
 
-        let mut n_bidders =  u32::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
+        let mut n_bidders =  u16::try_from_slice(&program_data_account_info.data.borrow()[n_bidders_idx.0..n_bidders_idx.1])?;
         let mut total_bid =  u64::try_from_slice(&program_data_account_info.data.borrow()[total_bid_idx.0..total_bid_idx.1])?;
 
 
@@ -776,7 +787,7 @@ impl Processor {
         // iii) there is no bid and no empty spot, so we replace the oldest bid
 
         // start by checking if a bid exists
-        let mut bidders_index = bidder_data.index;
+        let mut bidders_index = bidder_data.index as usize;
 
         // check the public key that is present in the data account at bid_index
         let key_idx = get_state_index(StateEnum::BidKeys{index: bidders_index});
@@ -807,7 +818,7 @@ impl Processor {
             // if there isn't a space we will want to replace the oldest bid
             // so we find  that in the same loop
             let mut oldest_bid_index : usize = 0;
-            let mut oldest_time = current_time + 1;
+            let mut oldest_time = i64::MAX;
             for i in 0..N_BID_BLOCKS {
 
 
@@ -818,7 +829,7 @@ impl Processor {
 
                     let total_index = i * BID_BLOCK + j;
 
-                    // if the bid time is zero that indicates we have find an empty slot, so break out of the loop
+                    // if the bid time is zero that indicates we have found an empty slot, so break out of the loop
                     if times.bid_times[j] == 0 {
                         bidders_index = total_index;
                         found_space = true;
@@ -861,7 +872,7 @@ impl Processor {
             bidder_token_pubkey.serialize(&mut &mut program_data_account_info.data.borrow_mut()[new_key_idx.0..new_key_idx.1])?;  
 
             // update their bid data
-            let new_bidder_data = BidderData {index: bidders_index};
+            let new_bidder_data = BidderData {index: bidders_index as u16};
             new_bidder_data.serialize(&mut &mut bidder_data_account_info.data.borrow_mut()[..])?;
 
             // update n_bidders

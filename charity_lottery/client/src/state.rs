@@ -98,13 +98,9 @@ pub struct State {
 
     // this is the last time we actually chose winners, and decides how soon in the future will we choose again
     pub prev_choose_winners_time: i64,
-    // this is the last time we decided that we would choose winners, and is used to not include bids that happened too recently
-    pub prev_check_winners_time: i64,
 
     // the number of active bids in the system up to MAX_BIDDERS
-    pub n_bidders: u32,
-    // the oldest bid in the system, which will be the first to be replaced
-    pub oldest_bid_index : usize,
+    pub n_bidders: u16,
     // the sum of all the current bids
     pub total_bid_amount : u64,
 

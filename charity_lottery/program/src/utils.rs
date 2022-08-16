@@ -145,12 +145,12 @@ pub fn create_token_account<'a>(
     Ok(())
 }
 
-pub fn get_bid_state(max_time : i64, program_data_account_info : &AccountInfo) ->  Result<(u32, u64), ProgramError> {
+pub fn get_bid_state(max_time : i64, program_data_account_info : &AccountInfo) ->  Result<(u16, u64), ProgramError> {
 
 
     // calculate the total bid amount and number of bidders at this time
     let mut total_bid : u64 = 0;
-    let mut n_bidders : u32 = 0;
+    let mut n_bidders : u16 = 0;
     for idx in 0..N_BID_BLOCKS {
         let bid_idx = get_state_index(StateEnum::BidAmounts {index: idx*BID_BLOCK});
         let time_idx = get_state_index(StateEnum::BidTimes {index: idx*BID_BLOCK});
@@ -174,7 +174,7 @@ pub fn get_bid_state(max_time : i64, program_data_account_info : &AccountInfo) -
 }
 
 pub fn check_winners_state<'a>(
-    n_bidders : u32, 
+    n_bidders : u16, 
     program_data_account_info : &AccountInfo<'a>,
     program_token_account_info : &AccountInfo<'a>
 ) ->  Result<u8, ProgramError> {
@@ -212,7 +212,7 @@ pub fn check_winners_state<'a>(
 
     // finally check if we have enough bidders for this
     let max_winners_from_bidders = n_bidders / 64 + 1;
-    if n_winners as u32 > max_winners_from_bidders {
+    if n_winners as u16 > max_winners_from_bidders {
         n_winners = max_winners_from_bidders as u8;
     }
 
@@ -226,14 +226,14 @@ pub fn check_winners_state<'a>(
     
     // on average we expect a single bidder to wait 5 minutes before being selected
     // we therefore calculate time_per_bidder based on the number of bidders, and number of winners being selected
-    // if this is below 10 seconds we just allow new winners to be selected so that there is less friction with large
+    // if this is below 3 seconds we just allow new winners to be selected so that there is less friction with large
     // numbers of bidders
 
     let time_per_bidder = (5.0 * 60.0) / ((n_bidders as f64) / (n_winners as f64));
     
     msg!("time_per_bidder {} time_passed: {} n_bidders {} token_balance {} max_blocks {}", time_per_bidder, time_passed, n_bidders, token_balance, max_token_blocks);
 
-    if time_per_bidder > 10.0 && time_passed < time_per_bidder {
+    if time_per_bidder > 3.0 && time_passed < time_per_bidder {
         return Ok(0);
     }
 

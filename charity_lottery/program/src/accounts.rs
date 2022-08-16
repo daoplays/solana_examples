@@ -60,7 +60,7 @@ pub fn get_expected_daoplays_token_key() -> Pubkey
 
 pub fn get_pda_bump() -> u8
 {
-    255
+    253
 }
 
 pub fn get_expected_program_address_key(program_id : &Pubkey) -> (Pubkey, u8)

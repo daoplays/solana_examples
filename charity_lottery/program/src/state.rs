@@ -7,7 +7,7 @@ use solana_program::{
 // the max number of winners we can select in one go
 pub const MAX_BIDDERS : usize = 1024;
 pub const MAX_WINNERS : usize = 4;
-pub const TOKENS_WON : u64 = 1;
+pub const TOKENS_WON : u64 = 100;
 
 pub const BID_BLOCK : usize = 64;
 pub const N_BID_BLOCKS : usize = 16;
@@ -50,20 +50,16 @@ pub struct CharityData {
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct BidderData {
-    pub index : usize
+    pub index : u16
 }
 
 pub struct State {
 
     // this is the last time we actually chose winners, and decides how soon in the future will we choose again
     pub prev_choose_winners_time: i64,
-    // this is the last time we decided that we would choose winners, and is used to not include bids that happened too recently
-    pub prev_check_winners_time: i64,
 
     // the number of active bids in the system up to MAX_BIDDERS
-    pub n_bidders: u32,
-    // the oldest bid in the system, which will be the first to be replaced
-    pub oldest_bid_index : usize,
+    pub n_bidders: u16,
     // the sum of all the current bids
     pub total_bid_amount : u64,
 
@@ -135,31 +131,31 @@ pub fn get_state_index(element: StateEnum) -> (usize, usize) {
         // the unix timestamp that winners were last selected, 8 bytes
         StateEnum::PrevSelectionTime => {(0, 8)}
     
-        // the number of bidders, 4 bytes
-        StateEnum::NBidders => {(16, 20)}
+        // the number of bidders, 2 bytes
+        StateEnum::NBidders => {(8, 10)}
         // the total amount bid currently in the ladder, 8 bytes
-        StateEnum::TotalBidAmount => {(28, 36)},
+        StateEnum::TotalBidAmount => {(10, 18)},
 
         // the list of bidder pubkeys, each is 32 bytes
-        StateEnum::BidKeys{index} => {(36 + index * 32, 36 + (index + 1) * 32)},
+        StateEnum::BidKeys{index} => {(18 + index * 32, 18 + (index + 1) * 32)},
         // the list of corresponding bid amounts, each is 8 bytes
-        StateEnum::BidAmounts{index} => {(32804 + index * 8, 32804 + (index + 1) * 8)},
+        StateEnum::BidAmounts{index} => {(32786 + index * 8, 32786 + (index + 1) * 8)},
         // the list of corresponding bid amounts, each is 8 bytes
-        StateEnum::BidTimes{index} => {(40996 + index * 8, 40996 + (index + 1) * 8)},
+        StateEnum::BidTimes{index} => {(40978 + index * 8, 40978 + (index + 1) * 8)},
 
         // the number of winners selected, 1 byte
-        StateEnum::NWinners => {(49188, 49189)},
+        StateEnum::NWinners => {(49170, 49171)},
         // pubkeys of the selected winners, each is 32 bytes
-        StateEnum::Winners{index} => {(49189 + index * 32, 49189 + (index + 1) * 32)},
+        StateEnum::Winners{index} => {(49171 + index * 32, 49171 + (index + 1) * 32)},
         
         // the Charity data is 80 bytes
-        StateEnum::CharityData => {(49317, 49397)}
+        StateEnum::CharityData => {(49299, 49379)}
     }
 }
 
 // helper function to return the size of the State so we can check the lamports required to be rent-exempt
 pub fn get_state_size() -> usize {
-    49397
+    49379
 }
 
 /// Determines and reports the size of greeting data.

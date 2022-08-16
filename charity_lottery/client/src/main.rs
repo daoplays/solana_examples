@@ -94,7 +94,7 @@ fn create_accounts(key_file: &String, amount : u64) ->Result<()> {
     // (3) Create RPC client to be used to talk to Solana cluster
     let connection = RpcClient::new(URL);
 
-    let program = Pubkey::from_str("G4ptu5or8cpepypcBaCp2j1WQfipxFFjvoCdgnrpEwdR").unwrap();
+    let program = Pubkey::from_str("EzigyiBDJy7Srq8xn6SK6Nx7BpenbSE3YbBSaBpPSN1q").unwrap();
   
     let (expected_pda, bump_seed) = Pubkey::find_program_address(&[b"token_account"], &program);
     let mint_address = Pubkey::from_str("CisHceikLeKxYiUqgDVduw2py2GEK71FTRykXGdwf22h").unwrap();
@@ -134,7 +134,7 @@ fn create_accounts(key_file: &String, amount : u64) ->Result<()> {
 
         println!("Creating programs data account");
         
-        let data_size: usize = 49397;
+        let data_size: usize = 49379;
         let space : u64 = data_size.try_into().unwrap();
         let lamports = rent::Rent::default().minimum_balance(data_size);
    
@@ -227,7 +227,7 @@ fn place_bid(key_file: &String, charity : Charity, amount_charity  : u64, amount
     };
 
     let wallet = read_keypair_file(key_file).unwrap();
-    let program = Pubkey::from_str("G4ptu5or8cpepypcBaCp2j1WQfipxFFjvoCdgnrpEwdR").unwrap();
+    let program = Pubkey::from_str("EzigyiBDJy7Srq8xn6SK6Nx7BpenbSE3YbBSaBpPSN1q").unwrap();
     let daoplays  = Pubkey::from_str("2BLkynLAWGwW58SLDAnhwsoiAuVtzqyfHKA3W3MJFwEF").unwrap();
 
     let program_data_account = Pubkey::create_with_seed(
@@ -326,7 +326,7 @@ fn place_bid(key_file: &String, charity : Charity, amount_charity  : u64, amount
 pub fn monitor_data(_key_file: &String) -> Result<()> {
 
     // (2) Create a new Keypair for the new account
-    let program = Pubkey::from_str("G4ptu5or8cpepypcBaCp2j1WQfipxFFjvoCdgnrpEwdR").unwrap();
+    let program = Pubkey::from_str("EzigyiBDJy7Srq8xn6SK6Nx7BpenbSE3YbBSaBpPSN1q").unwrap();
     let daoplays  = Pubkey::from_str("2BLkynLAWGwW58SLDAnhwsoiAuVtzqyfHKA3W3MJFwEF").unwrap();
 
     let program_data_account = Pubkey::create_with_seed(
@@ -370,7 +370,7 @@ fn select_winners(key_file: &String) ->Result<()> {
     // (3) Create RPC client to be used to talk to Solana cluster
     let connection = RpcClient::new(URL);
 
-    let program = Pubkey::from_str("G4ptu5or8cpepypcBaCp2j1WQfipxFFjvoCdgnrpEwdR").unwrap();
+    let program = Pubkey::from_str("EzigyiBDJy7Srq8xn6SK6Nx7BpenbSE3YbBSaBpPSN1q").unwrap();
     let daoplays  = Pubkey::from_str("2BLkynLAWGwW58SLDAnhwsoiAuVtzqyfHKA3W3MJFwEF").unwrap();
 
     // in this function we need to create the data account for the program
@@ -392,7 +392,14 @@ fn select_winners(key_file: &String) ->Result<()> {
     let eth_key =   Pubkey::from_str("EdVCmQ9FSPcVe5YySXDPCRmc8aDQLKJ9xvYBMZPie1Vw").unwrap();
     let sol_key =   Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
 
-        
+    println!("wallet {}",  wallet.pubkey().to_string());
+    println!("btc_key {}",  btc_key.to_string());
+    println!("eth_key {}",  eth_key.to_string());
+    println!("sol_key {}",  sol_key.to_string());
+    println!("data_account {}",  data_account.to_string());
+    println!("program_token_address {}",  program_token_address.to_string());
+
+
     let instruction = Instruction::new_with_borsh(
         program,
         &LotteryInstruction::SelectWinners,
