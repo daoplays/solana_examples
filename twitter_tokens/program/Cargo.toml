@@ -1,0 +1,20 @@
+[package]
+name = "twitter_tokens_v08"
+version = "0.1.0"
+edition = "2021"
+license = "WTFPL"
+publish = false
+
+[dependencies]
+solana-program = "1.11.1"
+thiserror = "1.0.24"
+spl-token = {version = "3.3.0", features = ["no-entrypoint"]}
+spl-associated-token-account = {version = "1.0.5", features = ["no-entrypoint"]}
+
+arrayref = "0.3.6"
+borsh = "0.9.3"
+solana-security-txt = {version = "1.0.1", features = ["parser"] }
+
+
+[lib]
+crate-type = ["cdylib", "lib"]

@@ -17,7 +17,7 @@ use spl_associated_token_account::{get_associated_token_address};
 
 
 const URL: &str = "https://api.devnet.solana.com";
-const PROGRAM_PUBKEY:  &str = "4gvkmbyVPgiorM6uiQnqdPpSSidwLcwctbTfrt9bCxsn";
+const PROGRAM_PUBKEY:  &str = "EWGpDRyDoPJ25WNM6UToKsEHcRaraGuPmUXsAQnJxYrc";
 
 fn main() {
 
@@ -138,8 +138,7 @@ pub fn create(
 
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(spl_associated_token_account::id(), false),
-            AccountMeta::new(solana_sdk::system_program::id(), false),
-            AccountMeta::new( solana_sdk::sysvar::rent::ID, false)
+            AccountMeta::new(solana_sdk::system_program::id(), false)
         ],
     );
 

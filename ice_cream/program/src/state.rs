@@ -45,7 +45,7 @@ pub fn get_score_meta_size() -> usize {
 }
 
 /// Determines and reports the size of greeting data.
-pub fn get_team_account_meta_size() -> usize {
+pub fn get_team_lookup_meta_size() -> usize {
     let encoded = TeamAccountMeta {team_account : solana_program::system_program::id() }
         .try_to_vec().unwrap();
 

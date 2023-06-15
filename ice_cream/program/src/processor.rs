@@ -88,8 +88,7 @@ impl Processor {
         funding_account: &AccountInfo<'a>,
         mint_account: &AccountInfo<'a>,
         new_token_account: &AccountInfo<'a>,
-        token_program: &AccountInfo<'a>,
-        rent_program: &AccountInfo<'a>
+        token_program: &AccountInfo<'a>
     ) -> ProgramResult
     {
     
@@ -109,7 +108,7 @@ impl Processor {
             &[funding_account.clone(), mint_account.clone()]
         )?;
 
-       let mint_idx = instruction::initialize_mint(
+       let mint_idx = instruction::initialize_mint2(
             token_program.key,
             mint_account.key,
             funding_account.key,
@@ -120,7 +119,7 @@ impl Processor {
         // Sign and submit transaction
         invoke(
             &mint_idx,
-            &[token_program.clone(), mint_account.clone(), funding_account.clone(), rent_program.clone()]
+            &[token_program.clone(), mint_account.clone(), funding_account.clone()]
         )?;
 
         // create the ATA
@@ -158,7 +157,7 @@ impl Processor {
 
         let account_info_iter = &mut accounts.iter();
 
-        // This function expects to be passed nine accounts, get them all first and then check their value is as expected
+        // This function expects to be passed eight accounts, get them all first and then check their value is as expected
         let funding_account_info = next_account_info(account_info_iter)?;
         let token_mint_account_info = next_account_info(account_info_iter)?;
         let new_token_account = next_account_info(account_info_iter)?;
@@ -169,7 +168,6 @@ impl Processor {
         let token_program_account_info = next_account_info(account_info_iter)?;
         let associated_token_account_info = next_account_info(account_info_iter)?;
         let system_program_account_info = next_account_info(account_info_iter)?;
-        let rent_account_info = next_account_info(account_info_iter)?;
 
         if !funding_account_info.is_signer {
             return Err(ProgramError::MissingRequiredSignature);
@@ -238,12 +236,6 @@ impl Processor {
             return Err(ProgramError::InvalidAccountData);
         }
 
-        // the ninth and final account is the sysvar rent account
-        if rent_account_info.key != &solana_program::sysvar::rent::id() {
-            msg!("expected eighth account to be the rent program {}", solana_program::sysvar::rent::id());
-            return Err(ProgramError::InvalidAccountData);
-        }
-
         // if the program has been passed an existing token mint, it must satisfy some conditions which we check below
         if **token_mint_account_info.try_borrow_lamports()? > 0 {
 
@@ -287,8 +279,7 @@ impl Processor {
                 funding_account_info,
                 token_mint_account_info,
                 new_token_account,
-                token_program_account_info,
-                rent_account_info
+                token_program_account_info
             )?;
         }
 
@@ -377,7 +368,7 @@ impl Processor {
             team_lookup_account,
             program_id,
             team_lookup_bump_seed,
-            state::get_team_account_meta_size(),
+            state::get_team_lookup_meta_size(),
             &index.to_le_bytes())?;
         
         // the lookup just stores the address of this teams data account
@@ -444,10 +435,10 @@ impl Processor {
         let account_info_iter = &mut accounts.iter();
 
         // This function expects to be passed six accounts, get them all first and then check their value is as expected
-        let funding_account_info = next_account_info(account_info_iter)?;
+        let player_account_info = next_account_info(account_info_iter)?;
 
         let token_mint_account = next_account_info(account_info_iter)?;
-        let user_token_account = next_account_info(account_info_iter)?;
+        let player_token_account = next_account_info(account_info_iter)?;
 
         let program_data_account = next_account_info(account_info_iter)?;
         let team_data_account = next_account_info(account_info_iter)?;
@@ -455,7 +446,7 @@ impl Processor {
         let associated_token_account_info = next_account_info(account_info_iter)?;
 
 
-        if !funding_account_info.is_signer {
+        if !player_account_info.is_signer {
             return Err(ProgramError::MissingRequiredSignature);
         }
 
@@ -502,24 +493,24 @@ impl Processor {
         }
 
         let expected_token_pubkey = get_associated_token_address(
-            &funding_account_info.key, 
+            &player_account_info.key, 
             &token_mint_account.key
         );
 
         // the third account is the user's token account
-        if user_token_account.key != &expected_token_pubkey
+        if player_token_account.key != &expected_token_pubkey
         {
             msg!("expected third account to be the user token account {}", expected_token_pubkey);
             return Err(ProgramError::InvalidAccountData);
         }
 
         // this user's token account must have been created already
-        if **user_token_account.try_borrow_lamports()? <= 0 {
+        if **player_token_account.try_borrow_lamports()? <= 0 {
             msg!("User token account has not been created yet");
             return Err(ProgramError::InvalidAccountData);
         }
 
-        let user_token_account_state = spl_token::state::Account::unpack_unchecked(&user_token_account.try_borrow_data()?)?;
+        let user_token_account_state = spl_token::state::Account::unpack_unchecked(&player_token_account.try_borrow_data()?)?;
 
         // check the user has tokens from the team mint
         if user_token_account_state.amount <= 0 {
