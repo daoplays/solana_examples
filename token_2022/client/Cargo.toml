@@ -1,0 +1,19 @@
+[package]
+name = "solana_rust_client"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+solana-sdk = "1.16.0"
+solana-client = "1.16.0"
+solana-program = "1.16.0"
+spl-token = {version = "3.5.0", features = ["no-entrypoint"]}
+spl-token-2022 = {version = "0.6.1", features = ["no-entrypoint"]}
+borsh = "0.10.3"
+thiserror = "1.0.40"
+solana-transaction-status = "1.16.0"
+rand = "0.7.0"
+spl-associated-token-account = "1.1.3"
+enum-map = "1.1.1"
