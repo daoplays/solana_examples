@@ -2097,20 +2097,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
-name = "token_2022"
-version = "1.0.0"
-dependencies = [
- "arrayref",
- "borsh 0.9.3",
- "enum-map",
- "solana-program",
- "spl-associated-token-account",
- "spl-token 3.5.0",
- "spl-token-2022 0.7.0",
- "thiserror",
-]
-
-[[package]]
 name = "toml"
 version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2134,6 +2120,20 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "winnow",
+]
+
+[[package]]
+name = "transfer_hook"
+version = "1.0.0"
+dependencies = [
+ "arrayref",
+ "borsh 0.9.3",
+ "enum-map",
+ "solana-program",
+ "spl-associated-token-account",
+ "spl-token 3.5.0",
+ "spl-token-2022 0.7.0",
+ "thiserror",
 ]
 
 [[package]]

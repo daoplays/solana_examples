@@ -87,7 +87,9 @@ impl Processor {
         // This function expects to be passed eight accounts, get them all first and then check their value is as expected
         let funding_account_info = next_account_info(account_info_iter)?;
         let token_mint_account_info = next_account_info(account_info_iter)?;
-        let new_token_account = next_account_info(account_info_iter)?;
+        let new_token_account: &AccountInfo<'_> = next_account_info(account_info_iter)?;
+
+        let transfer_hook_program_account: &AccountInfo<'_> = next_account_info(account_info_iter)?;
 
         let token_program_account_info = next_account_info(account_info_iter)?;
         let associated_token_account_info = next_account_info(account_info_iter)?;
@@ -123,20 +125,23 @@ impl Processor {
         let interest = state::Extensions::InterestBearing as u8;
         let transferable = state::Extensions::NonTransferable as u8;
         let default = state::Extensions::DefaultState as u8;
+        let transfer_hook = state::Extensions::TransferHook as u8;
 
         let include_transfer: bool = metadata.extensions & transfer > 0;
         let include_delegate: bool = metadata.extensions & delegate > 0;
         let include_interest: bool = metadata.extensions & interest > 0;
         let include_transferable: bool = metadata.extensions & transferable > 0;
         let include_default_state: bool = metadata.extensions & default > 0;
+        let include_transfer_hook: bool = metadata.extensions & transfer_hook > 0;
 
         msg!(
-            "include : {} {} {} {} {}",
+            "include : {} {} {} {} {} {}",
             include_transfer,
             include_delegate,
             include_interest,
             include_transferable,
-            include_default_state
+            include_default_state,
+            include_transfer_hook
         );
 
         let mut extension_types: Vec<spl_token_2022::extension::ExtensionType> = Vec::new();
@@ -154,6 +159,9 @@ impl Processor {
         }
         if include_default_state {
             extension_types.push(spl_token_2022::extension::ExtensionType::DefaultAccountState);
+        }
+        if include_transfer_hook {
+            extension_types.push(spl_token_2022::extension::ExtensionType::TransferHook);
         }
 
         let space = spl_token_2022::extension::ExtensionType::get_account_len::<
@@ -279,6 +287,28 @@ impl Processor {
                     token_program_account_info.clone(),
                     token_mint_account_info.clone(),
                     funding_account_info.clone(),
+                ],
+            )?;
+        }
+
+        if include_transfer_hook {
+            msg!("init transfer hook");
+            let config_init_idx =
+                spl_token_2022::extension::transfer_hook::instruction::initialize(
+                    &spl_token_2022::ID,
+                    &token_mint_account_info.key,
+                    Some(*funding_account_info.key),
+                    Some(*transfer_hook_program_account.key),
+                )
+                .unwrap();
+
+            invoke(
+                &config_init_idx,
+                &[
+                    token_program_account_info.clone(),
+                    token_mint_account_info.clone(),
+                    funding_account_info.clone(),
+                    transfer_hook_program_account.clone(),
                 ],
             )?;
         }

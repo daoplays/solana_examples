@@ -12,4 +12,5 @@ pub enum Extensions {
     InterestBearing = 4,
     NonTransferable = 8,
     DefaultState = 16,
+    TransferHook = 32,
 }
