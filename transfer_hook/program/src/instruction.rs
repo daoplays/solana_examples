@@ -1,7 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::program_error::ProgramError;
 
-use crate::error::NewError::InvalidInstruction;
+use spl_discriminator::{ArrayDiscriminator, SplDiscriminate};
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum TransferHookInstruction {
@@ -31,20 +31,41 @@ pub enum TransferHookInstruction {
     ///   3. `[]` System program
     ///   4..4+M `[]` `M` additional accounts, to be written to validation data
     ///
-    InitializeExtraAccountMetas,
+    InitializeExtraAccountMetaList,
 }
 
-impl TransferHookInstruction {
-    /// Unpacks a byte buffer into a [EscrowInstruction].
-    pub fn unpack(input: &[u8]) -> Result<Self, ProgramError> {
-        let (tag, rest) = input.split_first().ok_or(InvalidInstruction)?;
-        Ok(match tag {
-            0 => Self::Execute {
-                amount: u64::try_from_slice(&rest)?,
-            },
-            1 => Self::InitializeExtraAccountMetas,
+/// TLV instruction type only used to define the discriminator.
+#[derive(SplDiscriminate)]
+#[discriminator_hash_input("spl-transfer-hook-interface:execute")]
+pub struct ExecuteInstruction;
 
-            _ => return Err(InvalidInstruction.into()),
+/// TLV instruction type used to initialize extra account metas
+/// for the transfer hook
+#[derive(SplDiscriminate)]
+#[discriminator_hash_input("spl-transfer-hook-interface:initialize-extra-account-metas")]
+pub struct InitializeExtraAccountMetaListInstruction;
+
+
+impl TransferHookInstruction {
+
+    pub fn unpack(input: &[u8]) -> Result<Self, ProgramError> {
+        if input.len() < ArrayDiscriminator::LENGTH {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        let (discriminator, rest) = input.split_at(ArrayDiscriminator::LENGTH);
+        Ok(match discriminator {
+            ExecuteInstruction::SPL_DISCRIMINATOR_SLICE => {
+                let amount = rest
+                    .get(..8)
+                    .and_then(|slice| slice.try_into().ok())
+                    .map(u64::from_le_bytes)
+                    .ok_or(ProgramError::InvalidInstructionData)?;
+                Self::Execute { amount }
+            },
+            InitializeExtraAccountMetaListInstruction::SPL_DISCRIMINATOR_SLICE => {
+                Self::InitializeExtraAccountMetaList
+            },
+            _ => return Err(ProgramError::InvalidInstructionData),
         })
     }
 }

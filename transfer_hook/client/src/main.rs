@@ -1,6 +1,6 @@
 pub mod state;
 
-use crate::state::{Result, TokenInstruction};
+use crate::state::{Result, TransferHookInstruction};
 use std::env;
 use std::str::{from_utf8, FromStr};
 
@@ -20,6 +20,7 @@ use spl_token_2022;
 
 const URL: &str = "https://api.devnet.solana.com";
 const PROGRAM_PUBKEY: &str = "8ZMLymiBfEWkZwaRebKhFXgUGbEdpnjij36i5PULFHSX";
+const HOOK_PUBKEY: &str = "vyyNeAorB3Ce4nyfBK4dL7CMu9Jx2M9vK8zBGvFrpYd";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -28,6 +29,12 @@ fn main() {
 
     if function == "create" {
         if let Err(err) = create(key_file) {
+            eprintln!("{:?}", err);
+            std::process::exit(1);
+        }
+    }
+    if function == "transfer" {
+        if let Err(err) = transfer(key_file) {
             eprintln!("{:?}", err);
             std::process::exit(1);
         }
@@ -45,58 +52,74 @@ pub fn create(key_file: &String) -> Result<()> {
     // (3) Create RPC client to be used to talk to Solana cluster
     let connection = RpcClient::new(URL);
 
-    let program = Pubkey::from_str(PROGRAM_PUBKEY).unwrap();
-    let mint_address = Keypair::new();
+    let hook_program = Pubkey::from_str(HOOK_PUBKEY).unwrap();
 
-    let my_token_address = get_associated_token_address_with_program_id(
-        &wallet.pubkey(),
-        &mint_address.pubkey(),
-        &spl_token_2022::ID,
-    );
 
-    let transfer = state::Extensions::TransferFee as u8;
-    let delegate = state::Extensions::PermanentDelegate as u8;
-    let interest = state::Extensions::InterestBearing as u8;
-    let transferable = state::Extensions::NonTransferable as u8;
-    let default = state::Extensions::DefaultState as u8;
+    let mint_address = Pubkey::from_str("6PyymMZ3TXQSn9hW6fcwrpu3GQ7PrUtfevFNe3rvkX3T").unwrap();
+    let (expected_validation_address, bump_seed) =
+    state::get_extra_account_metas_address_and_bump_seed(&mint_address, &hook_program);
 
-    let included_extensions: u8 = transfer | transferable;
-
-    let include_transfer: u8 = included_extensions & transfer;
-    let include_delegate: u8 = included_extensions & delegate;
-    let include_interest: u8 = included_extensions & interest;
-    let include_transferable: u8 = included_extensions & transferable;
-    let include_default_state: u8 = included_extensions & default;
-
-    println!(
-        "values : {} {} {} {} {} {}",
-        included_extensions,
-        include_transfer > 0,
-        include_delegate > 0,
-        include_interest > 0,
-        include_transferable > 0,
-        include_default_state > 0
-    );
-
-    let meta_data = state::CreateMeta {
-        extensions: included_extensions,
-    };
+  
     let instruction = Instruction::new_with_borsh(
-        program,
-        &TokenInstruction::CreateToken {
-            metadata: meta_data,
-        },
+        hook_program,
+        &TransferHookInstruction::InitializeExtraAccountMetas ,
         vec![
+            AccountMeta::new(expected_validation_address, false),
+            AccountMeta::new(mint_address, false),
             AccountMeta::new_readonly(wallet.pubkey(), true),
-            AccountMeta::new(mint_address.pubkey(), true),
-            AccountMeta::new(my_token_address, false),
-            AccountMeta::new_readonly(spl_token_2022::id(), false),
-            AccountMeta::new_readonly(spl_associated_token_account::id(), false),
+
             AccountMeta::new(solana_sdk::system_program::id(), false),
         ],
     );
 
-    let signers = [&wallet, &mint_address];
+    let signers = [&wallet];
+    let instructions = vec![instruction];
+    let recent_hash = connection.get_latest_blockhash()?;
+
+    let txn = Transaction::new_signed_with_payer(
+        &instructions,
+        Some(&wallet.pubkey()),
+        &signers,
+        recent_hash,
+    );
+
+    let signature = connection.send_and_confirm_transaction(&txn)?;
+    println!("signature: {}", signature);
+    let response = connection.get_transaction(&signature, UiTransactionEncoding::Json)?;
+    println!("result: {:#?}", response);
+
+    Ok(())
+}
+
+
+pub fn transfer(key_file: &String) -> Result<()> {
+    // (2) Create a new Keypair for the new account
+    let wallet = read_keypair_file(key_file).unwrap();
+
+    // (3) Create RPC client to be used to talk to Solana cluster
+    let connection = RpcClient::new(URL);
+
+    let hook_program = Pubkey::from_str(HOOK_PUBKEY).unwrap();
+
+
+    let mint_address = Pubkey::from_str("CJpBCgjjJc1ES36Zahq4zRs85quLxtbiMRaFRVYQK2RZ").unwrap();
+    let (expected_validation_address, bump_seed) =
+    state::get_extra_account_metas_address_and_bump_seed(&mint_address, &hook_program);
+
+  
+    let instruction = Instruction::new_with_borsh(
+        hook_program,
+        &TransferHookInstruction::InitializeExtraAccountMetas ,
+        vec![
+            AccountMeta::new(expected_validation_address, false),
+            AccountMeta::new(mint_address, false),
+            AccountMeta::new_readonly(wallet.pubkey(), true),
+
+            AccountMeta::new(solana_sdk::system_program::id(), false),
+        ],
+    );
+
+    let signers = [&wallet];
     let instructions = vec![instruction];
     let recent_hash = connection.get_latest_blockhash()?;
 

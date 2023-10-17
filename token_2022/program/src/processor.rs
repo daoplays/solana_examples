@@ -1,27 +1,23 @@
 use crate::accounts;
+use crate::instruction::TransferHookInstruction;
 use crate::state;
 use crate::utils;
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::BorshDeserialize;
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
     entrypoint::ProgramResult,
     msg,
     program::invoke,
-    program::invoke_signed,
     program_error::ProgramError,
-    program_pack::Pack,
     pubkey::Pubkey,
     sysvar::rent,
+    instruction::AccountMeta
+
 };
 
-use spl_token::{instruction, state::Mint};
+use spl_associated_token_account::instruction::create_associated_token_account;
 
-use spl_associated_token_account::{
-    get_associated_token_address, instruction::create_associated_token_account,
-};
-
-use crate::error::NewError;
-use crate::instruction::{CreateMeta, TokenInstruction};
+use crate::instruction::{CreateMeta, TransferMeta, TokenInstruction};
 
 pub struct Processor;
 impl Processor {
@@ -35,53 +31,19 @@ impl Processor {
         match instruction {
             TokenInstruction::CreateToken { metadata } => {
                 Self::create_token(program_id, accounts, metadata)
+            },
+            TokenInstruction::Transfer { metadata} => {
+                Self::transfer(program_id, accounts, metadata)
             }
         }
     }
 
-    pub fn create_program_account<'a>(
-        funding_account: &AccountInfo<'a>,
-        pda: &AccountInfo<'a>,
-        program_id: &Pubkey,
-        bump_seed: u8,
-        data_size: usize,
-        seed: &[u8],
-    ) -> ProgramResult {
-        // Check if the account has already been initialized
-        if **pda.try_borrow_lamports()? > 0 {
-            msg!("This account is already initialized. skipping");
-            return Ok(());
-        }
-
-        msg!("Creating program derived account");
-
-        let space: u64 = data_size.try_into().unwrap();
-        let lamports = rent::Rent::default().minimum_balance(data_size);
-
-        msg!("Require {} lamports for {} size data", lamports, data_size);
-        let ix = solana_program::system_instruction::create_account(
-            funding_account.key,
-            pda.key,
-            lamports,
-            space,
-            program_id,
-        );
-
-        // Sign and submit transaction
-        invoke_signed(
-            &ix,
-            &[funding_account.clone(), pda.clone()],
-            &[&[seed, &[bump_seed]]],
-        )?;
-
-        Ok(())
-    }
-
     fn create_token<'a>(
-        program_id: &Pubkey,
+        _program_id: &Pubkey,
         accounts: &'a [AccountInfo<'a>],
         metadata: CreateMeta,
     ) -> ProgramResult {
+
         let account_info_iter = &mut accounts.iter();
 
         // This function expects to be passed eight accounts, get them all first and then check their value is as expected
@@ -90,10 +52,15 @@ impl Processor {
         let new_token_account: &AccountInfo<'_> = next_account_info(account_info_iter)?;
 
         let transfer_hook_program_account: &AccountInfo<'_> = next_account_info(account_info_iter)?;
+        let transfer_hook_validation_account: &AccountInfo<'_> = next_account_info(account_info_iter)?;
 
         let token_program_account_info = next_account_info(account_info_iter)?;
         let associated_token_account_info = next_account_info(account_info_iter)?;
         let system_program_account_info = next_account_info(account_info_iter)?;
+
+        // we may additionally pass an account to hold data for the mint
+        let mint_data_option: Option<&AccountInfo<'_>> = account_info_iter.next();
+
 
         if !funding_account_info.is_signer {
             return Err(ProgramError::MissingRequiredSignature);
@@ -114,11 +81,12 @@ impl Processor {
         }
 
         // support the following extensions
-        // transfer fee - 0
-        // permanent delegate - 1
-        // interest bearing - 2
-        // non transferable - 4
-        // default account state - 8
+        // transfer fee - 1
+        // permanent delegate - 2
+        // interest bearing - 4
+        // non transferable - 8
+        // default account state - 16
+        // transfer hook - 32
 
         let transfer = state::Extensions::TransferFee as u8;
         let delegate = state::Extensions::PermanentDelegate as u8;
@@ -164,9 +132,9 @@ impl Processor {
             extension_types.push(spl_token_2022::extension::ExtensionType::TransferHook);
         }
 
-        let space = spl_token_2022::extension::ExtensionType::get_account_len::<
+        let space = spl_token_2022::extension::ExtensionType::try_calculate_account_len::<
             spl_token_2022::state::Mint,
-        >(&extension_types);
+        >(&extension_types).unwrap();
         // first create the mint account for the new NFT
         let mint_rent = rent::Rent::default().minimum_balance(space);
 
@@ -311,6 +279,46 @@ impl Processor {
                     transfer_hook_program_account.clone(),
                 ],
             )?;
+
+           
+            
+            let mut account_metas = vec![
+                solana_program::instruction::AccountMeta::new(*transfer_hook_validation_account.key, false),
+                solana_program::instruction::AccountMeta::new(*token_mint_account_info.key, false),
+                solana_program::instruction::AccountMeta::new(*funding_account_info.key, true),
+                solana_program::instruction::AccountMeta::new_readonly(*system_program_account_info.key, false),
+            ];
+
+            let mut account_infos = vec![ 
+                transfer_hook_validation_account.clone(),
+                token_mint_account_info.clone(),
+                funding_account_info.clone(),
+                system_program_account_info.clone()
+            ];
+
+            // check if we added a mint data account
+            if mint_data_option.is_some() {
+                let mint_data_account_info = mint_data_option.unwrap();
+                let mint_data_meta = solana_program::instruction::AccountMeta::new(*mint_data_account_info.key, false);
+                account_metas.push(mint_data_meta);
+
+                account_infos.push(mint_data_account_info.clone());
+            }
+
+            let instruction_data = TransferHookInstruction::InitializeExtraAccountMetas.pack();
+
+            let init_accounts_idx = solana_program::instruction::Instruction {
+                program_id: *transfer_hook_program_account.key,
+                accounts: account_metas,
+                data: instruction_data,
+            };
+            
+            invoke(
+                &init_accounts_idx,
+                &account_infos,
+            )?;
+
+
         }
 
         msg!("initialise mint");
@@ -376,6 +384,84 @@ impl Processor {
                 ],
             )?;
         }
+        Ok(())
+    }
+
+    fn transfer<'a>(
+        _program_id: &Pubkey,
+        accounts: &'a [AccountInfo<'a>],
+        metadata: TransferMeta,
+    ) -> ProgramResult {
+
+        let account_info_iter = &mut accounts.iter();
+
+        let funding_account_info = next_account_info(account_info_iter)?;
+        let source_token_account_info = next_account_info(account_info_iter)?;
+        let dest_token_account_info = next_account_info(account_info_iter)?;
+        let mint_account_info = next_account_info(account_info_iter)?;
+
+        let hook_program_account_info = next_account_info(account_info_iter)?;
+        let validation_account_info = next_account_info(account_info_iter)?;
+        let mint_data_account_info = next_account_info(account_info_iter)?;
+
+        let token_program_account_info = next_account_info(account_info_iter)?;
+
+        // verify that the accounts are what we expect
+        accounts::check_token_account(
+            funding_account_info,
+            mint_account_info,
+            source_token_account_info,
+        )?;
+
+        let _validation_bump_seed = utils::check_program_data_account(validation_account_info, hook_program_account_info.key,vec![utils::EXTRA_ACCOUNT_METAS_SEED, &mint_account_info.key.to_bytes()], "validation".to_string()).unwrap();
+
+        let _mint_data_bump_seed = utils::check_program_data_account(mint_data_account_info, hook_program_account_info.key,vec![b"mint_data", &mint_account_info.key.to_bytes()], "mint_data".to_string()).unwrap();
+
+        accounts::check_token_program_2022_key(token_program_account_info)?;
+
+        // create a transfer_checked instruction
+        // this needs to be mutable because we will manually add extra accounts
+        let mut transfer_idx = spl_token_2022::instruction::transfer_checked(
+            &spl_token_2022::id(),
+            &source_token_account_info.key,
+            &mint_account_info.key,
+            &dest_token_account_info.key,
+            &funding_account_info.key,
+            &[&funding_account_info.key],
+            metadata.amount,
+            3,
+        ).unwrap();
+    
+        // add the three transfer hook accounts
+        transfer_idx.accounts.push(AccountMeta::new_readonly(
+            *hook_program_account_info.key,
+            false,
+        ));
+    
+        transfer_idx.accounts.push(AccountMeta::new_readonly(
+            *validation_account_info.key,
+            false,
+        ));
+    
+        transfer_idx.accounts.push(AccountMeta::new(
+            *mint_data_account_info.key,
+            false,
+        ));
+
+        invoke(
+            &transfer_idx,
+            &[
+                token_program_account_info.clone(),
+                source_token_account_info.clone(),
+                mint_account_info.clone(),
+                dest_token_account_info.clone(),
+                funding_account_info.clone(),
+                hook_program_account_info.clone(),
+                validation_account_info.clone(),
+                mint_data_account_info.clone(),
+            ],
+        )?;
+
         Ok(())
     }
 }
