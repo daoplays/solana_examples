@@ -6,21 +6,25 @@ use spl_discriminator::SplDiscriminate;
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct CreateMeta {
-    pub extensions: u8,
+    pub extensions: u64,
     pub transfer_fee_bp: u16,
     pub transfer_fee_max: u64,
     pub interest_rate: i16,
+    pub name: String,
+    pub symbol: String,
+    pub uri: String,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct TransferMeta {
-    pub amount: u64
+    pub amount: u64,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum TokenInstruction {
     CreateToken { metadata: CreateMeta },
     Transfer { metadata: TransferMeta },
+    UpdateMeta,
 }
 
 impl TokenInstruction {
@@ -34,12 +38,12 @@ impl TokenInstruction {
             1 => Self::Transfer {
                 metadata: TransferMeta::try_from_slice(&rest)?,
             },
+            2 => Self::UpdateMeta,
 
             _ => return Err(InvalidInstruction.into()),
         })
     }
 }
-
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum TransferHookInstruction {
@@ -58,7 +62,7 @@ pub enum TransferHookInstruction {
         /// Amount of tokens to transfer
         amount: u64,
     },
-    InitializeExtraAccountMetas
+    InitializeExtraAccountMetas,
 }
 
 /// TLV instruction type only used to define the discriminator. The actual data
@@ -74,10 +78,7 @@ pub struct ExecuteInstruction;
 #[discriminator_hash_input("spl-transfer-hook-interface:initialize-extra-account-metas")]
 pub struct InitializeExtraAccountMetaListInstruction;
 
-
-
 impl TransferHookInstruction {
-
     /// Packs a [TokenInstruction](enum.TokenInstruction.html) into a byte buffer.
     pub fn pack(&self) -> Vec<u8> {
         let mut buf = vec![];
@@ -85,13 +86,13 @@ impl TransferHookInstruction {
             Self::Execute { amount } => {
                 buf.extend_from_slice(ExecuteInstruction::SPL_DISCRIMINATOR_SLICE);
                 buf.extend_from_slice(&amount.to_le_bytes());
-            },
-            Self::InitializeExtraAccountMetas => {
-                buf.extend_from_slice(InitializeExtraAccountMetaListInstruction::SPL_DISCRIMINATOR_SLICE);
             }
-            
+            Self::InitializeExtraAccountMetas => {
+                buf.extend_from_slice(
+                    InitializeExtraAccountMetaListInstruction::SPL_DISCRIMINATOR_SLICE,
+                );
+            }
         };
         buf
     }
 }
-

@@ -1,7 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::pubkey::Pubkey;
-use thiserror::Error;
 use spl_discriminator::{ArrayDiscriminator, SplDiscriminate};
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -23,16 +23,19 @@ pub enum Error {
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct CreateMeta {
-    pub extensions: u8,
+    pub extensions: u64,
     pub transfer_fee_bp: u16,
     pub transfer_fee_max: u64,
     pub interest_rate: i16,
+    pub name: String,
+    pub symbol: String,
+    pub uri: String,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum TokenInstruction {
     CreateToken { metadata: CreateMeta },
-    Test
+    Test,
 }
 
 pub enum Extensions {
@@ -43,9 +46,9 @@ pub enum Extensions {
     NonTransferable = 8,
     DefaultState = 16,
     TransferHook = 32,
+    MetaData = 64,
+    Collection = 128,
 }
-
-
 
 /// Namespace for all programs implementing transfer-hook
 pub const NAMESPACE: &str = "spl-transfer-hook-interface";

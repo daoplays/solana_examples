@@ -5,19 +5,20 @@ use crate::utils;
 use borsh::BorshDeserialize;
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
+    borsh1::{get_instance_packed_len, try_from_slice_unchecked},
     entrypoint::ProgramResult,
+    instruction::AccountMeta,
     msg,
     program::invoke,
     program_error::ProgramError,
     pubkey::Pubkey,
     sysvar::rent,
-    instruction::AccountMeta
-
 };
-
 use spl_associated_token_account::instruction::create_associated_token_account;
+use spl_pod::optional_keys::OptionalNonZeroPubkey;
+use spl_token_2022::extension::{BaseStateWithExtensions, StateWithExtensions};
 
-use crate::instruction::{CreateMeta, TransferMeta, TokenInstruction};
+use crate::instruction::{CreateMeta, TokenInstruction, TransferMeta};
 
 pub struct Processor;
 impl Processor {
@@ -31,10 +32,11 @@ impl Processor {
         match instruction {
             TokenInstruction::CreateToken { metadata } => {
                 Self::create_token(program_id, accounts, metadata)
-            },
-            TokenInstruction::Transfer { metadata} => {
+            }
+            TokenInstruction::Transfer { metadata } => {
                 Self::transfer(program_id, accounts, metadata)
             }
+            TokenInstruction::UpdateMeta => Self::update_meta(program_id, accounts),
         }
     }
 
@@ -43,7 +45,6 @@ impl Processor {
         accounts: &'a [AccountInfo<'a>],
         metadata: CreateMeta,
     ) -> ProgramResult {
-
         let account_info_iter = &mut accounts.iter();
 
         // This function expects to be passed eight accounts, get them all first and then check their value is as expected
@@ -52,7 +53,8 @@ impl Processor {
         let new_token_account: &AccountInfo<'_> = next_account_info(account_info_iter)?;
 
         let transfer_hook_program_account: &AccountInfo<'_> = next_account_info(account_info_iter)?;
-        let transfer_hook_validation_account: &AccountInfo<'_> = next_account_info(account_info_iter)?;
+        let transfer_hook_validation_account: &AccountInfo<'_> =
+            next_account_info(account_info_iter)?;
 
         let token_program_account_info = next_account_info(account_info_iter)?;
         let associated_token_account_info = next_account_info(account_info_iter)?;
@@ -60,7 +62,6 @@ impl Processor {
 
         // we may additionally pass an account to hold data for the mint
         let mint_data_option: Option<&AccountInfo<'_>> = account_info_iter.next();
-
 
         if !funding_account_info.is_signer {
             return Err(ProgramError::MissingRequiredSignature);
@@ -88,12 +89,13 @@ impl Processor {
         // default account state - 16
         // transfer hook - 32
 
-        let transfer = state::Extensions::TransferFee as u8;
-        let delegate = state::Extensions::PermanentDelegate as u8;
-        let interest = state::Extensions::InterestBearing as u8;
-        let transferable = state::Extensions::NonTransferable as u8;
-        let default = state::Extensions::DefaultState as u8;
-        let transfer_hook = state::Extensions::TransferHook as u8;
+        let transfer = state::Extensions::TransferFee as u64;
+        let delegate = state::Extensions::PermanentDelegate as u64;
+        let interest = state::Extensions::InterestBearing as u64;
+        let transferable = state::Extensions::NonTransferable as u64;
+        let default = state::Extensions::DefaultState as u64;
+        let transfer_hook = state::Extensions::TransferHook as u64;
+        let meta_data = state::Extensions::MetaData as u64;
 
         let include_transfer: bool = metadata.extensions & transfer > 0;
         let include_delegate: bool = metadata.extensions & delegate > 0;
@@ -101,16 +103,7 @@ impl Processor {
         let include_transferable: bool = metadata.extensions & transferable > 0;
         let include_default_state: bool = metadata.extensions & default > 0;
         let include_transfer_hook: bool = metadata.extensions & transfer_hook > 0;
-
-        msg!(
-            "include : {} {} {} {} {} {}",
-            include_transfer,
-            include_delegate,
-            include_interest,
-            include_transferable,
-            include_default_state,
-            include_transfer_hook
-        );
+        let include_meta_data: bool = metadata.extensions & meta_data > 0;
 
         let mut extension_types: Vec<spl_token_2022::extension::ExtensionType> = Vec::new();
         if include_transfer {
@@ -131,12 +124,28 @@ impl Processor {
         if include_transfer_hook {
             extension_types.push(spl_token_2022::extension::ExtensionType::TransferHook);
         }
+        if include_meta_data {
+            extension_types.push(spl_token_2022::extension::ExtensionType::MetadataPointer);
+        }
 
         let space = spl_token_2022::extension::ExtensionType::try_calculate_account_len::<
             spl_token_2022::state::Mint,
-        >(&extension_types).unwrap();
+        >(&extension_types)
+        .unwrap();
+
+        let token_metadata = spl_token_metadata_interface::state::TokenMetadata {
+            name: "Epic Fish".to_string(),
+            symbol: "EPC".to_string(),
+               uri: "https://shdw-drive.genesysgo.net/AzjHvXgqUJortnr5fXDG2aPkp2PfFMvu4Egr57fdiite/PirateCoinMeta".to_string(),
+            update_authority: OptionalNonZeroPubkey(*funding_account_info.key),
+            mint: *token_mint_account_info.key,
+            ..Default::default()
+        };
+
+        let instance_size = get_instance_packed_len(&token_metadata)?;
+        msg!("metadata size {}", instance_size);
         // first create the mint account for the new NFT
-        let mint_rent = rent::Rent::default().minimum_balance(space);
+        let mint_rent = rent::Rent::default().minimum_balance(space + instance_size + 8);
 
         msg!("create account");
         let create_idx = solana_program::system_instruction::create_account(
@@ -280,26 +289,33 @@ impl Processor {
                 ],
             )?;
 
-           
-            
             let mut account_metas = vec![
-                solana_program::instruction::AccountMeta::new(*transfer_hook_validation_account.key, false),
+                solana_program::instruction::AccountMeta::new(
+                    *transfer_hook_validation_account.key,
+                    false,
+                ),
                 solana_program::instruction::AccountMeta::new(*token_mint_account_info.key, false),
                 solana_program::instruction::AccountMeta::new(*funding_account_info.key, true),
-                solana_program::instruction::AccountMeta::new_readonly(*system_program_account_info.key, false),
+                solana_program::instruction::AccountMeta::new_readonly(
+                    *system_program_account_info.key,
+                    false,
+                ),
             ];
 
-            let mut account_infos = vec![ 
+            let mut account_infos = vec![
                 transfer_hook_validation_account.clone(),
                 token_mint_account_info.clone(),
                 funding_account_info.clone(),
-                system_program_account_info.clone()
+                system_program_account_info.clone(),
             ];
 
             // check if we added a mint data account
             if mint_data_option.is_some() {
                 let mint_data_account_info = mint_data_option.unwrap();
-                let mint_data_meta = solana_program::instruction::AccountMeta::new(*mint_data_account_info.key, false);
+                let mint_data_meta = solana_program::instruction::AccountMeta::new(
+                    *mint_data_account_info.key,
+                    false,
+                );
                 account_metas.push(mint_data_meta);
 
                 account_infos.push(mint_data_account_info.clone());
@@ -312,13 +328,30 @@ impl Processor {
                 accounts: account_metas,
                 data: instruction_data,
             };
-            
+
+            invoke(&init_accounts_idx, &account_infos)?;
+        }
+
+        if include_meta_data {
+            msg!("init metadata");
+
+            let config_init_idx =
+                spl_token_2022::extension::metadata_pointer::instruction::initialize(
+                    &spl_token_2022::ID,
+                    &token_mint_account_info.key,
+                    Some(*funding_account_info.key),
+                    Some(*token_mint_account_info.key),
+                )
+                .unwrap();
+
             invoke(
-                &init_accounts_idx,
-                &account_infos,
+                &config_init_idx,
+                &[
+                    token_program_account_info.clone(),
+                    token_mint_account_info.clone(),
+                    funding_account_info.clone(),
+                ],
             )?;
-
-
         }
 
         msg!("initialise mint");
@@ -384,6 +417,71 @@ impl Processor {
                 ],
             )?;
         }
+
+        if include_meta_data {
+            invoke(
+                &spl_token_metadata_interface::instruction::initialize(
+                    &spl_token_2022::id(),
+                    token_mint_account_info.key,
+                    funding_account_info.key,
+                    token_mint_account_info.key,
+                    funding_account_info.key,
+                    metadata.name.to_string(),
+                    metadata.symbol.to_string(),
+                    metadata.uri.to_string(),
+                ),
+                &[
+                    token_mint_account_info.clone(),
+                    funding_account_info.clone(),
+                ],
+            )?;
+
+            let old_lamports = **token_mint_account_info.try_borrow_lamports()?;
+
+            invoke(
+                &spl_token_metadata_interface::instruction::update_field(
+                    &spl_token_2022::id(),
+                    token_mint_account_info.key,
+                    funding_account_info.key,
+                    spl_token_metadata_interface::state::Field::Key("Health".to_string()),
+                    "100".to_string(),
+                ),
+                &[
+                    token_mint_account_info.clone(),
+                    funding_account_info.clone(),
+                ],
+            )?;
+
+            let new_lamports;
+            {
+                let mint_data = token_mint_account_info.data.borrow();
+                let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
+                let new_len = mint.try_get_account_len()?;
+                new_lamports = rent::Rent::default().minimum_balance(new_len);
+
+                msg!("new len {} {}", new_len, new_lamports);
+            }
+
+            if new_lamports > old_lamports {
+                msg!(
+                    "update mint account current_balance: {} new_balance {}",
+                    old_lamports,
+                    new_lamports
+                );
+
+                invoke(
+                    &solana_program::system_instruction::transfer(
+                        funding_account_info.key,
+                        token_mint_account_info.key,
+                        new_lamports - old_lamports,
+                    ),
+                    &[
+                        funding_account_info.clone(),
+                        token_mint_account_info.clone(),
+                    ],
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -392,7 +490,6 @@ impl Processor {
         accounts: &'a [AccountInfo<'a>],
         metadata: TransferMeta,
     ) -> ProgramResult {
-
         let account_info_iter = &mut accounts.iter();
 
         let funding_account_info = next_account_info(account_info_iter)?;
@@ -413,9 +510,24 @@ impl Processor {
             source_token_account_info,
         )?;
 
-        let _validation_bump_seed = utils::check_program_data_account(validation_account_info, hook_program_account_info.key,vec![utils::EXTRA_ACCOUNT_METAS_SEED, &mint_account_info.key.to_bytes()], "validation".to_string()).unwrap();
+        let _validation_bump_seed = utils::check_program_data_account(
+            validation_account_info,
+            hook_program_account_info.key,
+            vec![
+                utils::EXTRA_ACCOUNT_METAS_SEED,
+                &mint_account_info.key.to_bytes(),
+            ],
+            "validation".to_string(),
+        )
+        .unwrap();
 
-        let _mint_data_bump_seed = utils::check_program_data_account(mint_data_account_info, hook_program_account_info.key,vec![b"mint_data", &mint_account_info.key.to_bytes()], "mint_data".to_string()).unwrap();
+        let _mint_data_bump_seed = utils::check_program_data_account(
+            mint_data_account_info,
+            hook_program_account_info.key,
+            vec![b"mint_data", &mint_account_info.key.to_bytes()],
+            "mint_data".to_string(),
+        )
+        .unwrap();
 
         accounts::check_token_program_2022_key(token_program_account_info)?;
 
@@ -430,23 +542,23 @@ impl Processor {
             &[&funding_account_info.key],
             metadata.amount,
             3,
-        ).unwrap();
-    
+        )
+        .unwrap();
+
         // add the three transfer hook accounts
         transfer_idx.accounts.push(AccountMeta::new_readonly(
             *hook_program_account_info.key,
             false,
         ));
-    
+
         transfer_idx.accounts.push(AccountMeta::new_readonly(
             *validation_account_info.key,
             false,
         ));
-    
-        transfer_idx.accounts.push(AccountMeta::new(
-            *mint_data_account_info.key,
-            false,
-        ));
+
+        transfer_idx
+            .accounts
+            .push(AccountMeta::new(*mint_data_account_info.key, false));
 
         invoke(
             &transfer_idx,
@@ -461,6 +573,62 @@ impl Processor {
                 mint_data_account_info.clone(),
             ],
         )?;
+
+        Ok(())
+    }
+
+    fn update_meta<'a>(_program_id: &Pubkey, accounts: &'a [AccountInfo<'a>]) -> ProgramResult {
+        let account_info_iter = &mut accounts.iter();
+
+        let funding_account_info = next_account_info(account_info_iter)?;
+        let token_mint_account_info = next_account_info(account_info_iter)?;
+        let _token_program_account_info = next_account_info(account_info_iter)?;
+
+        let old_lamports = **token_mint_account_info.try_borrow_lamports()?;
+
+        invoke(
+            &spl_token_metadata_interface::instruction::update_field(
+                &spl_token_2022::id(),
+                token_mint_account_info.key,
+                funding_account_info.key,
+                spl_token_metadata_interface::state::Field::Key("Health".to_string()),
+                "100".to_string(),
+            ),
+            &[
+                token_mint_account_info.clone(),
+                funding_account_info.clone(),
+            ],
+        )?;
+
+        let new_lamports;
+        {
+            let mint_data = token_mint_account_info.data.borrow();
+            let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
+            let new_len = mint.try_get_account_len()?;
+            new_lamports = rent::Rent::default().minimum_balance(new_len);
+
+            msg!("new len {} {}", new_len, new_lamports);
+        }
+
+        if new_lamports > old_lamports {
+            msg!(
+                "update mint account current_balance: {} new_balance {}",
+                old_lamports,
+                new_lamports
+            );
+
+            invoke(
+                &solana_program::system_instruction::transfer(
+                    funding_account_info.key,
+                    token_mint_account_info.key,
+                    new_lamports - old_lamports,
+                ),
+                &[
+                    funding_account_info.clone(),
+                    token_mint_account_info.clone(),
+                ],
+            )?;
+        }
 
         Ok(())
     }

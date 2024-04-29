@@ -1,6 +1,6 @@
 pub mod state;
 
-use crate::state::{TokenInstruction};
+use crate::state::TokenInstruction;
 use std::env;
 use std::str::{from_utf8, FromStr};
 
@@ -16,13 +16,14 @@ use solana_sdk::{
 };
 use solana_transaction_status::UiTransactionEncoding;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
+use spl_tlv_account_resolution::{
+    account::ExtraAccountMeta, seeds::Seed, state::ExtraAccountMetaList,
+};
 use spl_token_2022;
-use spl_tlv_account_resolution::{account::ExtraAccountMeta, state::ExtraAccountMetaList, seeds::Seed};
 use spl_type_length_value::state::TlvStateBorrowed;
 
-
 const URL: &str = "https://api.devnet.solana.com";
-const PROGRAM_PUBKEY: &str = "8ZMLymiBfEWkZwaRebKhFXgUGbEdpnjij36i5PULFHSX";
+const PROGRAM_PUBKEY: &str = "DUTVNGBNfAmx5QEFVyCJvEpEusUBHndCAVTWEThDV4oG";
 const HOOK_PUBKEY: &str = "vyyNeAorB3Ce4nyfBK4dL7CMu9Jx2M9vK8zBGvFrpYd";
 
 fn main() {
@@ -68,30 +69,37 @@ pub fn create(key_file: &String) -> std::result::Result<(), state::Error> {
         &spl_token_2022::ID,
     );
 
-    let (mint_data_account, _old_bump_seed) = Pubkey::find_program_address(&[b"mint_data", &mint_address.pubkey().to_bytes()], &hook_program);
-
+    let (mint_data_account, _old_bump_seed) = Pubkey::find_program_address(
+        &[b"mint_data", &mint_address.pubkey().to_bytes()],
+        &hook_program,
+    );
 
     let (expected_validation_address, bump_seed) =
-    state::get_extra_account_metas_address_and_bump_seed(&mint_address.pubkey(), &hook_program);
+        state::get_extra_account_metas_address_and_bump_seed(&mint_address.pubkey(), &hook_program);
 
-    println!(" extra for mint {} {}", mint_address.pubkey().to_string(), expected_validation_address.to_string());
+    println!(
+        " extra for mint {} {}",
+        mint_address.pubkey().to_string(),
+        expected_validation_address.to_string()
+    );
 
-    let transfer = state::Extensions::TransferFee as u8;
-    let delegate = state::Extensions::PermanentDelegate as u8;
-    let interest = state::Extensions::InterestBearing as u8;
-    let transferable = state::Extensions::NonTransferable as u8;
-    let default = state::Extensions::DefaultState as u8;
-    let transfer_hook = state::Extensions::TransferHook as u8;
+    let transfer = state::Extensions::TransferFee as u64;
+    let delegate = state::Extensions::PermanentDelegate as u64;
+    let interest = state::Extensions::InterestBearing as u64;
+    let transferable = state::Extensions::NonTransferable as u64;
+    let default = state::Extensions::DefaultState as u64;
+    let transfer_hook = state::Extensions::TransferHook as u64;
+    let metadata = state::Extensions::MetaData as u64;
 
+    let included_extensions: u64 = metadata;
 
-    let included_extensions: u8 = transfer_hook;
-
-    let include_transfer: u8 = included_extensions & transfer;
-    let include_delegate: u8 = included_extensions & delegate;
-    let include_interest: u8 = included_extensions & interest;
-    let include_transferable: u8 = included_extensions & transferable;
-    let include_default_state: u8 = included_extensions & default;
-    let include_transfer_hook: u8 = included_extensions & transfer_hook;
+    let include_transfer: u64 = included_extensions & transfer;
+    let include_delegate: u64 = included_extensions & delegate;
+    let include_interest: u64 = included_extensions & interest;
+    let include_transferable: u64 = included_extensions & transferable;
+    let include_default_state: u64 = included_extensions & default;
+    let include_transfer_hook: u64 = included_extensions & transfer_hook;
+    let include_metadata: u64 = included_extensions & metadata;
 
     println!(
         "values : {} {} {} {} {} {}",
@@ -108,6 +116,9 @@ pub fn create(key_file: &String) -> std::result::Result<(), state::Error> {
         transfer_fee_bp: 0,
         transfer_fee_max: 0,
         interest_rate: 0,
+        name: "Epic Fish".to_string(),
+        symbol: "EPC".to_string(),
+        uri: "https://shdw-drive.genesysgo.net/AzjHvXgqUJortnr5fXDG2aPkp2PfFMvu4Egr57fdiite/PirateCoinMeta".to_string(),
     };
 
     let instruction = Instruction::new_with_borsh(
@@ -121,13 +132,10 @@ pub fn create(key_file: &String) -> std::result::Result<(), state::Error> {
             AccountMeta::new(my_token_address, false),
             AccountMeta::new_readonly(hook_program, false),
             AccountMeta::new(expected_validation_address, false),
-
             AccountMeta::new_readonly(spl_token_2022::id(), false),
             AccountMeta::new_readonly(spl_associated_token_account::id(), false),
             AccountMeta::new(solana_sdk::system_program::id(), false),
-
             AccountMeta::new(mint_data_account, false),
-
         ],
     );
 
@@ -147,10 +155,8 @@ pub fn create(key_file: &String) -> std::result::Result<(), state::Error> {
     let response = connection.get_transaction(&signature, UiTransactionEncoding::Json)?;
     println!("result: {:#?}", response);
 
-
     Ok(())
 }
-
 
 pub fn test(key_file: &String) -> std::result::Result<(), state::Error> {
     // (2) Create a new Keypair for the new account
@@ -162,7 +168,8 @@ pub fn test(key_file: &String) -> std::result::Result<(), state::Error> {
     let hook_program = Pubkey::from_str(HOOK_PUBKEY).unwrap();
 
     let mint_address = Pubkey::from_str("ERhf8aDCyZrSuAXW1fLVn78G3itxhjymGfeuY9Dgfxxa").unwrap();
-    let expected_validation_address = Pubkey::from_str("2mFo1KSeohvLYzVNvxjji12F2QDN3wTVhzvN6ny37KUr").unwrap();
+    let expected_validation_address =
+        Pubkey::from_str("2mFo1KSeohvLYzVNvxjji12F2QDN3wTVhzvN6ny37KUr").unwrap();
 
     let my_token_address = get_associated_token_address_with_program_id(
         &wallet.pubkey(),
@@ -170,16 +177,20 @@ pub fn test(key_file: &String) -> std::result::Result<(), state::Error> {
         &spl_token_2022::ID,
     );
 
-    let (mint_data_account, _old_bump_seed) = Pubkey::find_program_address(&[b"mint_data", &mint_address.to_bytes()], &hook_program);
+    let (mint_data_account, _old_bump_seed) =
+        Pubkey::find_program_address(&[b"mint_data", &mint_address.to_bytes()], &hook_program);
 
-    println!("mint data account {}",mint_data_account.to_string());
+    println!("mint data account {}", mint_data_account.to_string());
 
-    let extra_account_data = connection.get_account_data(&expected_validation_address).unwrap();
+    let extra_account_data = connection
+        .get_account_data(&expected_validation_address)
+        .unwrap();
 
-    println!("extra_account_data {:?}",extra_account_data);
+    println!("extra_account_data {:?}", extra_account_data);
     let state = TlvStateBorrowed::unpack(&extra_account_data[..]).unwrap();
     println!("have state {:?}", state);
-    let extra_meta_list = ExtraAccountMetaList::unpack_with_tlv_state::<state::ExecuteInstruction>(&state).unwrap();
+    let extra_meta_list =
+        ExtraAccountMetaList::unpack_with_tlv_state::<state::ExecuteInstruction>(&state).unwrap();
     println!("have list");
     let extra_account_metas = extra_meta_list.data();
 
@@ -190,9 +201,21 @@ pub fn test(key_file: &String) -> std::result::Result<(), state::Error> {
     let new_account = Keypair::new();
     let lamports = rent::Rent::default().minimum_balance(0);
 
-    let create_idx = solana_program::system_instruction::create_account(&wallet.pubkey(), &new_account.pubkey(), lamports, 0,&solana_sdk::system_program::id());
+    let create_idx = solana_program::system_instruction::create_account(
+        &wallet.pubkey(),
+        &new_account.pubkey(),
+        lamports,
+        0,
+        &solana_sdk::system_program::id(),
+    );
 
-    let create_token_account_idx = spl_associated_token_account::instruction::create_associated_token_account(&wallet.pubkey(), &new_account.pubkey(), &mint_address, &spl_token_2022::id());
+    let create_token_account_idx =
+        spl_associated_token_account::instruction::create_associated_token_account(
+            &wallet.pubkey(),
+            &new_account.pubkey(),
+            &mint_address,
+            &spl_token_2022::id(),
+        );
 
     let dest_token_address = get_associated_token_address_with_program_id(
         &new_account.pubkey(),
@@ -211,45 +234,42 @@ pub fn test(key_file: &String) -> std::result::Result<(), state::Error> {
         &[&wallet.pubkey()],
         1000,
         3,
-    ).unwrap();
+    )
+    .unwrap();
 
-    transfer_idx.accounts.push(AccountMeta::new_readonly(
-        hook_program,
-        false,
-    ));
+    transfer_idx
+        .accounts
+        .push(AccountMeta::new_readonly(hook_program, false));
 
     transfer_idx.accounts.push(AccountMeta::new_readonly(
         expected_validation_address,
         false,
     ));
 
-    transfer_idx.accounts.push(AccountMeta::new(
-        mint_data_account,
-        false,
-    ));
+    transfer_idx
+        .accounts
+        .push(AccountMeta::new(mint_data_account, false));
 
-/*
-    let mut account_metas = vec![];
-    spl_token_2022::offchain::get_extra_transfer_account_metas(&mut account_metas, 
-        |address| connection.get_account(&address).map_ok(|opt| opt.map(|acc| acc.data)), 
-        &mint_address);
-
+    /*
+       let mut account_metas = vec![];
+       spl_token_2022::offchain::get_extra_transfer_account_metas(&mut account_metas,
+           |address| connection.get_account(&address).map_ok(|opt| opt.map(|acc| acc.data)),
+           &mint_address);
 
 
-        
-    spl_token_2022::offchain::resolve_extra_transfer_account_metas(
-        &mut instruction,
-        |address| {
-            rpc_client
-                .get_account(address)
-                .map_ok(|opt| opt.map(|acc| acc.data))
-        },
-        mint,
-    )
-    .await.unwrap();
- */
 
 
+       spl_token_2022::offchain::resolve_extra_transfer_account_metas(
+           &mut instruction,
+           |address| {
+               rpc_client
+                   .get_account(address)
+                   .map_ok(|opt| opt.map(|acc| acc.data))
+           },
+           mint,
+       )
+       .await.unwrap();
+    */
 
     let signers = [&wallet, &new_account];
     let instructions = vec![create_idx, create_token_account_idx, transfer_idx];
@@ -266,7 +286,6 @@ pub fn test(key_file: &String) -> std::result::Result<(), state::Error> {
     println!("signature: {}", signature);
     let response = connection.get_transaction(&signature, UiTransactionEncoding::Json)?;
     println!("result: {:#?}", response);
-
 
     Ok(())
 }

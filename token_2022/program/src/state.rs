@@ -13,4 +13,6 @@ pub enum Extensions {
     NonTransferable = 8,
     DefaultState = 16,
     TransferHook = 32,
+    MetaData = 64,
+    Collection = 128,
 }

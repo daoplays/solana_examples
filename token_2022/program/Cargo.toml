@@ -6,17 +6,19 @@ license = "WTFPL"
 publish = false
 
 [dependencies]
-solana-program = "1.16.0"
+solana-program = "=1.18.11"
 thiserror = "1.0.24"
-spl-token = {version = "3.5.0", features = ["no-entrypoint"]}
+spl-token = {version = "4.0.0", features = ["no-entrypoint"]}
 arrayref = "0.3.6"
-borsh = "0.9.3"
-spl-associated-token-account = {version = "1.1.3", features = ["no-entrypoint"]}
-enum-map = "1.1.1"
-spl-token-2022 = {version = "0.9.0", features = ["no-entrypoint"]}
-spl-discriminator = "0.1.0"
-spl-type-length-value = "0.3.0"
-spl-tlv-account-resolution = "0.4.0"
+borsh = "=1.4.0"
+serde = { version = "1.0.198", optional = true }
+spl-associated-token-account = {version = "3.0.2", features = ["no-entrypoint"]}
+spl-token-2022 = {version = "3.0.2", features = ["no-entrypoint"]}
+spl-discriminator = "0.2.2"
+spl-type-length-value = "0.4.3"
+spl-tlv-account-resolution = "0.6.3"
+spl-pod = "0.2.2"
+spl-token-metadata-interface = { version = "0.3.3"}
 
 [lib]
 crate-type = ["cdylib", "lib"]
