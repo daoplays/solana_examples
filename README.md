@@ -17,3 +17,12 @@ https://www.daoplays.org/blog/charity_auction
 
 token_2022
 https://www.daoplays.org/blog/intro_token_2022
+
+transfer_hook
+https://www.daoplays.org/blog/transfer_hook
+
+metaplex core
+https://www.daoplays.org/blog/core_p1
+
+options
+coming soon!
