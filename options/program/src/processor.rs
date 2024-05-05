@@ -1,0 +1,526 @@
+use crate::{
+    error::OptionsError,
+    instruction::{
+        accounts::{
+            CreateCollectionAccounts, CreateOptionAccounts, ExecuteAccounts, InitAccounts,
+            RefundAccounts,
+        },
+        ListOptionAssetMeta,
+    },
+    utils,
+};
+use borsh::{to_vec, BorshDeserialize};
+use solana_program::{
+    account_info::next_account_info,
+    clock::Clock,
+    program::{invoke, invoke_signed},
+    program_error::ProgramError,
+    system_instruction,
+    sysvar::rent,
+    sysvar::Sysvar,
+};
+use solana_program::{account_info::AccountInfo, entrypoint::ProgramResult, msg, pubkey::Pubkey};
+use solana_program::{log::sol_log_compute_units, serde_varint::serialize};
+
+use crate::instruction::{CreateOptionAssetMeta, CreateOptionCollectionMeta, OptionsInstruction};
+use mpl_core::instructions::{CreateCollectionV1CpiBuilder, CreateV1CpiBuilder};
+use spl_associated_token_account::instruction::create_associated_token_account;
+use spl_token_2022::extension::{BaseStateWithExtensions, StateWithExtensions};
+
+pub struct Processor;
+impl Processor {
+    pub fn process<'a>(
+        program_id: &Pubkey,
+        accounts: &'a [AccountInfo<'a>],
+        instruction_data: &[u8],
+    ) -> ProgramResult {
+        let instruction = OptionsInstruction::try_from_slice(instruction_data)?;
+
+        match instruction {
+            OptionsInstruction::Init() => {
+                msg!("Init");
+                Self::init(program_id, accounts)
+            }
+
+            OptionsInstruction::CreateCollection(args) => {
+                msg!("Create Collection");
+                Self::create_collection(program_id, accounts, args)
+            }
+
+            OptionsInstruction::CreateOption(args) => {
+                Self::create_option(program_id, accounts, args)
+            }
+            OptionsInstruction::TransferToken => utils::transfer(program_id, accounts),
+
+            OptionsInstruction::Execute() => Self::execute(program_id, accounts),
+
+            OptionsInstruction::Refund() => Self::refund(program_id, accounts),
+
+            OptionsInstruction::List(args) => Self::list(program_id, accounts, args),
+        }
+    }
+
+    pub fn init<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>]) -> ProgramResult {
+        let ctx = InitAccounts::context(accounts)?;
+
+        if !ctx.accounts.user.is_signer {
+            return Err(ProgramError::MissingRequiredSignature);
+        }
+
+        let (_pda_account, bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
+
+        let lamports = rent::Rent::default().minimum_balance(0);
+
+        let ix = solana_program::system_instruction::create_account(
+            ctx.accounts.user.key,
+            ctx.accounts.program_pda.key,
+            lamports,
+            0,
+            program_id,
+        );
+
+        invoke_signed(
+            &ix,
+            &[ctx.accounts.user.clone(), ctx.accounts.program_pda.clone()],
+            &[&[b"pda", &[bump_seed]]],
+        )?;
+
+        Ok(())
+    }
+
+    fn create_collection<'a>(
+        program_id: &Pubkey,
+        accounts: &'a [AccountInfo<'a>],
+        args: CreateOptionCollectionMeta,
+    ) -> ProgramResult {
+        let ctx = CreateCollectionAccounts::context(accounts)?;
+
+        let (_collection_account, bump_seed) = Pubkey::find_program_address(
+            &[&ctx.accounts.token_mint.key.to_bytes(), b"Collection"],
+            &program_id,
+        );
+
+        let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
+
+        let _create_cpi = CreateCollectionV1CpiBuilder::new(ctx.accounts.core_program)
+            .collection(ctx.accounts.collection_account)
+            .payer(ctx.accounts.user)
+            .update_authority(Some(ctx.accounts.program_pda))
+            .name(args.name.to_string())
+            .uri(args.uri.to_string())
+            .system_program(ctx.accounts.system_program)
+            .invoke_signed(&[
+                &[
+                    &ctx.accounts.token_mint.key.to_bytes(),
+                    b"Collection",
+                    &[bump_seed],
+                ],
+                &[b"pda", &[pda_bump_seed]],
+            ])
+            .unwrap();
+
+        mpl_core::instructions::AddCollectionPluginV1CpiBuilder::new(ctx.accounts.core_program)
+            .collection(ctx.accounts.collection_account)
+            .payer(ctx.accounts.user)
+            .authority(Some(ctx.accounts.program_pda))
+            .plugin(mpl_core::types::Plugin::Attributes(
+                mpl_core::types::Attributes {
+                    attribute_list: vec![mpl_core::types::Attribute {
+                        key: "token_mint".to_string(),
+                        value: ctx.accounts.token_mint.key.to_string(),
+                    }],
+                },
+            ))
+            .system_program(ctx.accounts.system_program)
+            .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
+            .unwrap();
+
+        Ok(())
+    }
+
+    fn create_option<'a>(
+        program_id: &Pubkey,
+        accounts: &'a [AccountInfo<'a>],
+        args: CreateOptionAssetMeta,
+    ) -> ProgramResult {
+        let ctx = CreateOptionAccounts::context(accounts)?;
+
+        let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
+
+        let mint_data = ctx.accounts.token_mint.data.borrow();
+        let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
+
+        let whole_tokens = (args.token_amount as f64) / f64::powf(10.0, mint.base.decimals as f64);
+        let whole_sol = (args.strike as f64) / f64::powf(10.0, 9.0);
+        let strike_price: f64 = whole_tokens / whole_sol;
+        let total_lamports = args.strike * args.token_amount;
+
+        let price_sol = (args.price as f64) / f64::powf(10.0, 9.0);
+
+        let _create_cpi = CreateV1CpiBuilder::new(ctx.accounts.core_program)
+            .authority(Some(ctx.accounts.program_pda))
+            .asset(ctx.accounts.asset_account)
+            .collection(Some(ctx.accounts.collection_account))
+            .payer(ctx.accounts.user)
+            .owner(Some(ctx.accounts.program_pda))
+            .data_state(mpl_core::types::DataState::AccountState)
+            .name(args.name.to_string())
+            .uri(args.uri.to_string())
+            .system_program(ctx.accounts.system_program)
+            .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
+            .unwrap();
+
+        mpl_core::instructions::AddPluginV1CpiBuilder::new(ctx.accounts.core_program)
+            .asset(ctx.accounts.asset_account)
+            .collection(Some(ctx.accounts.collection_account))
+            .payer(ctx.accounts.user)
+            .authority(Some(ctx.accounts.program_pda))
+            .plugin(mpl_core::types::Plugin::Attributes(
+                mpl_core::types::Attributes {
+                    attribute_list: vec![
+                        mpl_core::types::Attribute {
+                            key: "creator".to_string(),
+                            value: ctx.accounts.user.key.to_string(),
+                        },
+                        mpl_core::types::Attribute {
+                            key: "side".to_string(),
+                            value: args.side.to_string(),
+                        },
+                        mpl_core::types::Attribute {
+                            key: "token_amount".to_string(),
+                            value: whole_tokens.to_string(),
+                        },
+                        mpl_core::types::Attribute {
+                            key: "strike_price".to_string(),
+                            value: strike_price.to_string(),
+                        },
+                        mpl_core::types::Attribute {
+                            key: "end_time".to_string(),
+                            value: args.end_date.to_string(),
+                        },
+                        mpl_core::types::Attribute {
+                            key: "total_lamports".to_string(),
+                            value: total_lamports.to_string(),
+                        },
+                        mpl_core::types::Attribute {
+                            key: "listed".to_string(),
+                            value: 1.to_string(),
+                        },
+                        mpl_core::types::Attribute {
+                            key: "option_price".to_string(),
+                            value: price_sol.to_string(),
+                        },
+                    ],
+                },
+            ))
+            .system_program(ctx.accounts.system_program)
+            .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
+            .unwrap();
+
+        // create the token accounts if required
+        if **ctx.accounts.user_token_account.try_borrow_lamports()? == 0 {
+            let create_user_ata_idx = create_associated_token_account(
+                &ctx.accounts.user.key,
+                &ctx.accounts.user.key,
+                &ctx.accounts.token_mint.key,
+                ctx.accounts.token_2022.key,
+            );
+
+            invoke(
+                &create_user_ata_idx,
+                &[
+                    ctx.accounts.user.clone(),
+                    ctx.accounts.token_mint.clone(),
+                    ctx.accounts.user_token_account.clone(),
+                    ctx.accounts.token_2022.clone(),
+                ],
+            )?;
+        }
+
+        if **ctx.accounts.program_token_account.try_borrow_lamports()? == 0 {
+            let create_program_ata_idx = create_associated_token_account(
+                &ctx.accounts.user.key,
+                &ctx.accounts.program_pda.key,
+                &ctx.accounts.token_mint.key,
+                ctx.accounts.token_2022.key,
+            );
+
+            invoke(
+                &create_program_ata_idx,
+                &[
+                    ctx.accounts.user.clone(),
+                    ctx.accounts.program_pda.clone(),
+                    ctx.accounts.token_mint.clone(),
+                    ctx.accounts.program_token_account.clone(),
+                    ctx.accounts.token_2022.clone(),
+                ],
+            )?;
+        }
+
+        // if this is an option for someone to buy tokens from the user, transfer them to the program now
+        if args.side == 0 {
+            utils::transfer_T22_tokens(
+                args.token_amount,
+                ctx.accounts.user_token_account,
+                ctx.accounts.token_mint,
+                ctx.accounts.program_token_account,
+                ctx.accounts.user,
+                ctx.accounts.token_2022,
+                pda_bump_seed,
+                vec![b"pda"],
+                mint.base.decimals,
+                &Vec::new(),
+            )
+            .unwrap();
+        }
+        // otherwise transfer the SOL to the PDA
+        else {
+            invoke(
+                &system_instruction::transfer(
+                    ctx.accounts.user.key,
+                    ctx.accounts.program_pda.key,
+                    total_lamports,
+                ),
+                &[ctx.accounts.user.clone(), ctx.accounts.program_pda.clone()],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn list<'a>(
+        program_id: &Pubkey,
+        accounts: &'a [AccountInfo<'a>],
+        args: ListOptionAssetMeta,
+    ) -> ProgramResult {
+        let ctx = CreateOptionAccounts::context(accounts)?;
+
+        let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
+
+        let asset = mpl_core::Asset::from_bytes(&ctx.accounts.asset_account.data.borrow()[..])?;
+
+        let mut asset_attributes = asset
+            .plugin_list
+            .attributes
+            .unwrap()
+            .attributes
+            .attribute_list;
+
+        asset_attributes[6].value = 1.to_string();
+        let price_sol = (args.price as f64) / f64::powf(10.0, 9.0);
+        asset_attributes[7].value = price_sol.to_string();
+
+        mpl_core::instructions::UpdatePluginV1CpiBuilder::new(ctx.accounts.core_program)
+            .asset(ctx.accounts.asset_account)
+            .collection(Some(ctx.accounts.collection_account))
+            .payer(ctx.accounts.user)
+            .authority(Some(ctx.accounts.program_pda))
+            .plugin(mpl_core::types::Plugin::Attributes(
+                mpl_core::types::Attributes {
+                    attribute_list: asset_attributes,
+                },
+            ))
+            .system_program(ctx.accounts.system_program)
+            .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
+            .unwrap();
+
+        Ok(())
+    }
+
+    pub fn execute<'a>(
+        program_id: &Pubkey,
+        accounts: &'a [AccountInfo<'a>],
+    ) -> Result<(), ProgramError> {
+        let ctx = ExecuteAccounts::context(accounts)?;
+
+        let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
+
+        let mint_data = ctx.accounts.token_mint.data.borrow();
+        let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
+
+        let asset = mpl_core::Asset::from_bytes(&ctx.accounts.asset_account.data.borrow()[..])?;
+
+        let asset_attributes = asset
+            .plugin_list
+            .attributes
+            .unwrap()
+            .attributes
+            .attribute_list;
+
+        let deadline: i64 = asset_attributes[4].value.parse::<i64>().unwrap();
+
+        let clock = Clock::get()?;
+
+        // can only claim tickets if it is after launch has ended
+        if clock.unix_timestamp > (deadline / 1000) as i64 {
+            msg!("Cannot execute option after deadline");
+            return Err(OptionsError::PastDeadline.into());
+        }
+
+        // create the token accounts if required
+        if **ctx.accounts.user_token_account.try_borrow_lamports()? == 0 {
+            let create_user_ata_idx = create_associated_token_account(
+                &ctx.accounts.user.key,
+                &ctx.accounts.user.key,
+                &ctx.accounts.token_mint.key,
+                ctx.accounts.token_2022.key,
+            );
+
+            invoke(
+                &create_user_ata_idx,
+                &[
+                    ctx.accounts.user.clone(),
+                    ctx.accounts.token_mint.clone(),
+                    ctx.accounts.user_token_account.clone(),
+                    ctx.accounts.token_2022.clone(),
+                ],
+            )?;
+        }
+
+        let side: u8 = asset_attributes[1].value.parse::<u8>().unwrap();
+        let whole_token_amount: f64 = asset_attributes[2].value.parse::<f64>().unwrap();
+        let token_amount: u64 =
+            (whole_token_amount * ((10 as u64).pow(mint.base.decimals as u32) as f64)) as u64;
+
+        let lamports: u64 = asset_attributes[5].value.parse::<u64>().unwrap();
+
+        // if this was a buy option then transfer the tokens to the user, and the SOL to the creator
+        if side == 0 {
+            utils::transfer_T22_tokens(
+                token_amount,
+                ctx.accounts.program_token_account,
+                ctx.accounts.token_mint,
+                ctx.accounts.user_token_account,
+                ctx.accounts.user,
+                ctx.accounts.token_2022,
+                pda_bump_seed,
+                vec![b"pda"],
+                mint.base.decimals,
+                &Vec::new(),
+            )
+            .unwrap();
+
+            invoke(
+                &system_instruction::transfer(
+                    ctx.accounts.user.key,
+                    ctx.accounts.creator.key,
+                    lamports,
+                ),
+                &[ctx.accounts.user.clone(), ctx.accounts.creator.clone()],
+            )?;
+        } else {
+            invoke_signed(
+                &system_instruction::transfer(
+                    ctx.accounts.program_pda.key,
+                    ctx.accounts.user.key,
+                    lamports,
+                ),
+                &[ctx.accounts.user.clone(), ctx.accounts.program_pda.clone()],
+                &[&[b"pda", &[pda_bump_seed]]],
+            )?;
+
+            utils::transfer_T22_tokens(
+                token_amount,
+                ctx.accounts.user_token_account,
+                ctx.accounts.token_mint,
+                ctx.accounts.creator_token_account,
+                ctx.accounts.user,
+                ctx.accounts.token_2022,
+                pda_bump_seed,
+                vec![b"pda"],
+                mint.base.decimals,
+                &Vec::new(),
+            )
+            .unwrap();
+        }
+
+        // finally burn the asset
+        mpl_core::instructions::BurnV1CpiBuilder::new(ctx.accounts.core_program)
+            .asset(ctx.accounts.asset_account)
+            .collection(Some(ctx.accounts.collection_account))
+            .authority(Some(ctx.accounts.program_pda))
+            .payer(ctx.accounts.user)
+            .system_program(Some(ctx.accounts.system_program))
+            .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
+            .unwrap();
+
+        Ok(())
+    }
+
+    pub fn refund<'a>(
+        program_id: &Pubkey,
+        accounts: &'a [AccountInfo<'a>],
+    ) -> Result<(), ProgramError> {
+        let ctx = RefundAccounts::context(accounts)?;
+
+        let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
+
+        let mint_data = ctx.accounts.token_mint.data.borrow();
+        let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
+
+        let asset = mpl_core::Asset::from_bytes(&ctx.accounts.asset_account.data.borrow()[..])?;
+
+        let asset_attributes = asset
+            .plugin_list
+            .attributes
+            .unwrap()
+            .attributes
+            .attribute_list;
+
+        let deadline: i64 = asset_attributes[4].value.parse::<i64>().unwrap();
+
+        let clock = Clock::get()?;
+
+        // can only claim tickets if it is after launch has ended
+        if clock.unix_timestamp < (deadline / 1000) as i64 {
+            msg!("Cannot refund option before deadline");
+            return Err(OptionsError::BeforeDeadline.into());
+        }
+
+        let side: u8 = asset_attributes[1].value.parse::<u8>().unwrap();
+        let whole_token_amount: f64 = asset_attributes[2].value.parse::<f64>().unwrap();
+        let token_amount: u64 =
+            (whole_token_amount * ((10 as u64).pow(mint.base.decimals as u32) as f64)) as u64;
+
+        let lamports: u64 = asset_attributes[5].value.parse::<u64>().unwrap();
+
+        // if this was a buy option then return the tokens to the creator
+        if side == 0 {
+            utils::transfer_T22_tokens(
+                token_amount,
+                ctx.accounts.program_token_account,
+                ctx.accounts.token_mint,
+                ctx.accounts.creator_token_account,
+                ctx.accounts.user,
+                ctx.accounts.token_2022,
+                pda_bump_seed,
+                vec![b"pda"],
+                mint.base.decimals,
+                &Vec::new(),
+            )
+            .unwrap();
+        } else {
+            invoke_signed(
+                &system_instruction::transfer(
+                    ctx.accounts.program_pda.key,
+                    ctx.accounts.creator.key,
+                    lamports,
+                ),
+                &[ctx.accounts.user.clone(), ctx.accounts.program_pda.clone()],
+                &[&[b"pda", &[pda_bump_seed]]],
+            )?;
+        }
+
+        // finally burn the asset
+        mpl_core::instructions::BurnV1CpiBuilder::new(ctx.accounts.core_program)
+            .asset(ctx.accounts.asset_account)
+            .collection(Some(ctx.accounts.collection_account))
+            .authority(Some(ctx.accounts.program_pda))
+            .payer(ctx.accounts.user)
+            .system_program(Some(ctx.accounts.system_program))
+            .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
+            .unwrap();
+
+        Ok(())
+    }
+}
