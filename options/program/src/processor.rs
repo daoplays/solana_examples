@@ -1,9 +1,10 @@
 use crate::{
+    accounts,
     error::OptionsError,
     instruction::{
         accounts::{
             CreateCollectionAccounts, CreateOptionAccounts, ExecuteAccounts, InitAccounts,
-            RefundAccounts,
+            ListAccounts, PurchaseAccounts, RefundAccounts,
         },
         ListOptionAssetMeta,
     },
@@ -13,11 +14,11 @@ use borsh::{to_vec, BorshDeserialize};
 use solana_program::{
     account_info::next_account_info,
     clock::Clock,
+    native_token::LAMPORTS_PER_SOL,
     program::{invoke, invoke_signed},
     program_error::ProgramError,
     system_instruction,
-    sysvar::rent,
-    sysvar::Sysvar,
+    sysvar::{rent, Sysvar},
 };
 use solana_program::{account_info::AccountInfo, entrypoint::ProgramResult, msg, pubkey::Pubkey};
 use solana_program::{log::sol_log_compute_units, serde_varint::serialize};
@@ -34,6 +35,7 @@ impl Processor {
         accounts: &'a [AccountInfo<'a>],
         instruction_data: &[u8],
     ) -> ProgramResult {
+        msg!("Process");
         let instruction = OptionsInstruction::try_from_slice(instruction_data)?;
 
         match instruction {
@@ -57,6 +59,7 @@ impl Processor {
             OptionsInstruction::Refund() => Self::refund(program_id, accounts),
 
             OptionsInstruction::List(args) => Self::list(program_id, accounts, args),
+            OptionsInstruction::Purchase() => Self::purchase(program_id, accounts),
         }
     }
 
@@ -151,11 +154,10 @@ impl Processor {
         let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
 
         let whole_tokens = (args.token_amount as f64) / f64::powf(10.0, mint.base.decimals as f64);
-        let whole_sol = (args.strike as f64) / f64::powf(10.0, 9.0);
-        let strike_price: f64 = whole_tokens / whole_sol;
-        let total_lamports = args.strike * args.token_amount;
+        let strike_price = (args.strike as f64) / (LAMPORTS_PER_SOL as f64);
+        let total_lamports = ((args.strike as f64) * whole_tokens) as u64;
 
-        let price_sol = (args.price as f64) / f64::powf(10.0, 9.0);
+        let price_sol = (args.price as f64) / (LAMPORTS_PER_SOL as f64);
 
         let _create_cpi = CreateV1CpiBuilder::new(ctx.accounts.core_program)
             .authority(Some(ctx.accounts.program_pda))
@@ -166,6 +168,24 @@ impl Processor {
             .data_state(mpl_core::types::DataState::AccountState)
             .name(args.name.to_string())
             .uri(args.uri.to_string())
+            .plugins(vec![
+                mpl_core::types::PluginAuthorityPair {
+                    plugin: mpl_core::types::Plugin::PermanentBurnDelegate(
+                        mpl_core::types::PermanentBurnDelegate {},
+                    ),
+                    authority: Some(mpl_core::types::PluginAuthority::Address {
+                        address: *ctx.accounts.program_pda.key,
+                    }),
+                },
+                mpl_core::types::PluginAuthorityPair {
+                    plugin: mpl_core::types::Plugin::PermanentTransferDelegate(
+                        mpl_core::types::PermanentTransferDelegate {},
+                    ),
+                    authority: Some(mpl_core::types::PluginAuthority::Address {
+                        address: *ctx.accounts.program_pda.key,
+                    }),
+                },
+            ])
             .system_program(ctx.accounts.system_program)
             .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
             .unwrap();
@@ -187,6 +207,10 @@ impl Processor {
                             value: args.side.to_string(),
                         },
                         mpl_core::types::Attribute {
+                            key: "token_mint".to_string(),
+                            value: ctx.accounts.token_mint.key.to_string(),
+                        },
+                        mpl_core::types::Attribute {
                             key: "token_amount".to_string(),
                             value: whole_tokens.to_string(),
                         },
@@ -199,16 +223,20 @@ impl Processor {
                             value: args.end_date.to_string(),
                         },
                         mpl_core::types::Attribute {
-                            key: "total_lamports".to_string(),
-                            value: total_lamports.to_string(),
-                        },
-                        mpl_core::types::Attribute {
                             key: "listed".to_string(),
                             value: 1.to_string(),
                         },
                         mpl_core::types::Attribute {
                             key: "option_price".to_string(),
                             value: price_sol.to_string(),
+                        },
+                        mpl_core::types::Attribute {
+                            key: "seller".to_string(),
+                            value: ctx.accounts.user.key.to_string(),
+                        },
+                        mpl_core::types::Attribute {
+                            key: "num_sales".to_string(),
+                            value: 0.to_string(),
                         },
                     ],
                 },
@@ -293,7 +321,7 @@ impl Processor {
         accounts: &'a [AccountInfo<'a>],
         args: ListOptionAssetMeta,
     ) -> ProgramResult {
-        let ctx = CreateOptionAccounts::context(accounts)?;
+        let ctx = ListAccounts::context(accounts)?;
 
         let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
 
@@ -307,8 +335,9 @@ impl Processor {
             .attribute_list;
 
         asset_attributes[6].value = 1.to_string();
-        let price_sol = (args.price as f64) / f64::powf(10.0, 9.0);
+        let price_sol = (args.price as f64) / (LAMPORTS_PER_SOL as f64);
         asset_attributes[7].value = price_sol.to_string();
+        asset_attributes[8].value = ctx.accounts.user.key.to_string();
 
         mpl_core::instructions::UpdatePluginV1CpiBuilder::new(ctx.accounts.core_program)
             .asset(ctx.accounts.asset_account)
@@ -324,6 +353,16 @@ impl Processor {
             .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
             .unwrap();
 
+        mpl_core::instructions::TransferV1CpiBuilder::new(ctx.accounts.core_program)
+            .asset(ctx.accounts.asset_account)
+            .authority(Some(ctx.accounts.user))
+            .payer(ctx.accounts.user)
+            .new_owner(ctx.accounts.program_pda)
+            .collection(Some(ctx.accounts.collection_account))
+            .system_program(Some(ctx.accounts.system_program))
+            .invoke()
+            .unwrap();
+
         Ok(())
     }
 
@@ -332,6 +371,10 @@ impl Processor {
         accounts: &'a [AccountInfo<'a>],
     ) -> Result<(), ProgramError> {
         let ctx = ExecuteAccounts::context(accounts)?;
+
+        accounts::check_token_program_2022_key(ctx.accounts.token_2022)?;
+        accounts::check_system_program_key(ctx.accounts.system_program)?;
+        accounts::check_associated_token_program_key(ctx.accounts.associated)?;
 
         let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
 
@@ -347,7 +390,7 @@ impl Processor {
             .attributes
             .attribute_list;
 
-        let deadline: i64 = asset_attributes[4].value.parse::<i64>().unwrap();
+        let deadline: i64 = asset_attributes[5].value.parse::<i64>().unwrap();
 
         let clock = Clock::get()?;
 
@@ -378,11 +421,12 @@ impl Processor {
         }
 
         let side: u8 = asset_attributes[1].value.parse::<u8>().unwrap();
-        let whole_token_amount: f64 = asset_attributes[2].value.parse::<f64>().unwrap();
+        let whole_token_amount: f64 = asset_attributes[3].value.parse::<f64>().unwrap();
         let token_amount: u64 =
             (whole_token_amount * ((10 as u64).pow(mint.base.decimals as u32) as f64)) as u64;
 
-        let lamports: u64 = asset_attributes[5].value.parse::<u64>().unwrap();
+        let strike: f64 = asset_attributes[4].value.parse::<f64>().unwrap();
+        let lamports: u64 = (whole_token_amount * strike * (LAMPORTS_PER_SOL as f64)) as u64;
 
         // if this was a buy option then transfer the tokens to the user, and the SOL to the creator
         if side == 0 {
@@ -391,7 +435,7 @@ impl Processor {
                 ctx.accounts.program_token_account,
                 ctx.accounts.token_mint,
                 ctx.accounts.user_token_account,
-                ctx.accounts.user,
+                ctx.accounts.program_pda,
                 ctx.accounts.token_2022,
                 pda_bump_seed,
                 vec![b"pda"],
@@ -453,6 +497,10 @@ impl Processor {
     ) -> Result<(), ProgramError> {
         let ctx = RefundAccounts::context(accounts)?;
 
+        accounts::check_token_program_2022_key(ctx.accounts.token_2022)?;
+        accounts::check_system_program_key(ctx.accounts.system_program)?;
+        accounts::check_associated_token_program_key(ctx.accounts.associated)?;
+
         let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
 
         let mint_data = ctx.accounts.token_mint.data.borrow();
@@ -467,7 +515,7 @@ impl Processor {
             .attributes
             .attribute_list;
 
-        let deadline: i64 = asset_attributes[4].value.parse::<i64>().unwrap();
+        let deadline: i64 = asset_attributes[5].value.parse::<i64>().unwrap();
 
         let clock = Clock::get()?;
 
@@ -478,20 +526,22 @@ impl Processor {
         }
 
         let side: u8 = asset_attributes[1].value.parse::<u8>().unwrap();
-        let whole_token_amount: f64 = asset_attributes[2].value.parse::<f64>().unwrap();
+        let whole_token_amount: f64 = asset_attributes[3].value.parse::<f64>().unwrap();
         let token_amount: u64 =
             (whole_token_amount * ((10 as u64).pow(mint.base.decimals as u32) as f64)) as u64;
 
-        let lamports: u64 = asset_attributes[5].value.parse::<u64>().unwrap();
+        let strike: f64 = asset_attributes[4].value.parse::<f64>().unwrap();
+        let lamports: u64 = (whole_token_amount * strike * (LAMPORTS_PER_SOL as f64)) as u64;
 
         // if this was a buy option then return the tokens to the creator
         if side == 0 {
+            msg!("Refund buy option {}", token_amount);
             utils::transfer_T22_tokens(
                 token_amount,
                 ctx.accounts.program_token_account,
                 ctx.accounts.token_mint,
                 ctx.accounts.creator_token_account,
-                ctx.accounts.user,
+                ctx.accounts.program_pda,
                 ctx.accounts.token_2022,
                 pda_bump_seed,
                 vec![b"pda"],
@@ -511,15 +561,87 @@ impl Processor {
             )?;
         }
 
-        // finally burn the asset
-        mpl_core::instructions::BurnV1CpiBuilder::new(ctx.accounts.core_program)
+        // finally transfer and burn the asset
+
+        mpl_core::instructions::TransferV1CpiBuilder::new(ctx.accounts.core_program)
             .asset(ctx.accounts.asset_account)
             .collection(Some(ctx.accounts.collection_account))
             .authority(Some(ctx.accounts.program_pda))
             .payer(ctx.accounts.user)
+            .new_owner(ctx.accounts.user)
             .system_program(Some(ctx.accounts.system_program))
             .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
             .unwrap();
+
+        mpl_core::instructions::BurnV1CpiBuilder::new(ctx.accounts.core_program)
+            .asset(ctx.accounts.asset_account)
+            .collection(Some(ctx.accounts.collection_account))
+            .authority(Some(ctx.accounts.user))
+            .payer(ctx.accounts.user)
+            .system_program(Some(ctx.accounts.system_program))
+            .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
+            .unwrap();
+
+        Ok(())
+    }
+
+    fn purchase<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>]) -> ProgramResult {
+        let ctx = PurchaseAccounts::context(accounts)?;
+
+        let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
+
+        let asset = mpl_core::Asset::from_bytes(&ctx.accounts.asset_account.data.borrow()[..])?;
+
+        let mut asset_attributes = asset
+            .plugin_list
+            .attributes
+            .unwrap()
+            .attributes
+            .attribute_list;
+
+        // listed
+        asset_attributes[6].value = 0.to_string();
+
+        let current_purchases = asset_attributes[9].value.parse::<u32>().unwrap();
+        asset_attributes[9].value = (current_purchases + 1).to_string();
+
+        let lamports: u64 =
+            (asset_attributes[7].value.parse::<f64>().unwrap() * (LAMPORTS_PER_SOL as f64)) as u64;
+
+        msg!(
+            "lamports: {} {}",
+            lamports,
+            asset_attributes[7].value.parse::<f64>().unwrap()
+        );
+
+        mpl_core::instructions::UpdatePluginV1CpiBuilder::new(ctx.accounts.core_program)
+            .asset(ctx.accounts.asset_account)
+            .collection(Some(ctx.accounts.collection_account))
+            .payer(ctx.accounts.user)
+            .authority(Some(ctx.accounts.program_pda))
+            .plugin(mpl_core::types::Plugin::Attributes(
+                mpl_core::types::Attributes {
+                    attribute_list: asset_attributes,
+                },
+            ))
+            .system_program(ctx.accounts.system_program)
+            .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
+            .unwrap();
+
+        mpl_core::instructions::TransferV1CpiBuilder::new(ctx.accounts.core_program)
+            .asset(ctx.accounts.asset_account)
+            .authority(Some(ctx.accounts.program_pda))
+            .payer(ctx.accounts.user)
+            .new_owner(ctx.accounts.user)
+            .collection(Some(ctx.accounts.collection_account))
+            .system_program(Some(ctx.accounts.system_program))
+            .invoke_signed(&[&[b"pda", &[pda_bump_seed]]])
+            .unwrap();
+
+        invoke(
+            &system_instruction::transfer(ctx.accounts.user.key, ctx.accounts.seller.key, lamports),
+            &[ctx.accounts.user.clone(), ctx.accounts.seller.clone()],
+        )?;
 
         Ok(())
     }

@@ -29,6 +29,7 @@ pub struct CreateMeta {
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum TokenInstruction {
+    Init,
     CreateCollection { args: CreateMeta },
     CreateToken { args: CreateMeta },
 }
