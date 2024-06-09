@@ -64,6 +64,109 @@ pub fn transfer<'a>(
     Ok(())
 }
 
+pub fn transfer_tokens<'a>(
+    is_2022: bool,
+    amount: u64,
+    token_source_account: &AccountInfo<'a>,
+    token_mint_account: &AccountInfo<'a>,
+    token_dest_account: &AccountInfo<'a>,
+    authority_account: &AccountInfo<'a>,
+    token_program: &AccountInfo<'a>,
+    bump_seed: u8,
+    seed: Vec<&[u8]>,
+    decimals: u8,
+    transfer_hook_accounts: &Vec<AccountInfo<'a>>,
+) -> Result<(), ProgramError> {
+    if is_2022 {
+        return transfer_T22_tokens(
+            amount,
+            token_source_account,
+            token_mint_account,
+            token_dest_account,
+            authority_account,
+            token_program,
+            bump_seed,
+            seed,
+            decimals,
+            transfer_hook_accounts,
+        );
+    } else {
+        return transfer_spl_tokens(
+            amount,
+            token_source_account,
+            token_dest_account,
+            authority_account,
+            token_program,
+            bump_seed,
+            seed,
+        );
+    }
+}
+
+pub fn transfer_spl_tokens<'a>(
+    amount: u64,
+    token_source_account: &AccountInfo<'a>,
+    token_dest_account: &AccountInfo<'a>,
+    authority_account: &AccountInfo<'a>,
+    token_program_account: &AccountInfo<'a>,
+    bump_seed: u8,
+    seed: Vec<&[u8]>,
+) -> Result<(), ProgramError> {
+    let ix = spl_token::instruction::transfer(
+        token_program_account.key,
+        token_source_account.key,
+        token_dest_account.key,
+        authority_account.key,
+        &[],
+        amount,
+    )?;
+
+    // Sign and submit transaction
+    if seed.len() == 1 {
+        // Sign and submit transaction
+        invoke_signed(
+            &ix,
+            &[
+                token_source_account.clone(),
+                token_dest_account.clone(),
+                authority_account.clone(),
+                token_program_account.clone(),
+            ],
+            &[&[seed[0], &[bump_seed]]],
+        )?;
+    }
+
+    if seed.len() == 2 {
+        // Sign and submit transaction
+        invoke_signed(
+            &ix,
+            &[
+                token_source_account.clone(),
+                token_dest_account.clone(),
+                authority_account.clone(),
+                token_program_account.clone(),
+            ],
+            &[&[seed[0], seed[1], &[bump_seed]]],
+        )?;
+    }
+
+    if seed.len() == 3 {
+        // Sign and submit transaction
+        invoke_signed(
+            &ix,
+            &[
+                token_source_account.clone(),
+                token_dest_account.clone(),
+                authority_account.clone(),
+                token_program_account.clone(),
+            ],
+            &[&[seed[0], seed[1], seed[2], &[bump_seed]]],
+        )?;
+    }
+
+    Ok(())
+}
+
 pub fn transfer_T22_tokens<'a>(
     amount: u64,
     token_source_account: &AccountInfo<'a>,
@@ -74,7 +177,7 @@ pub fn transfer_T22_tokens<'a>(
     bump_seed: u8,
     seed: Vec<&[u8]>,
     decimals: u8,
-    transfer_hook_accounts: &Vec<&AccountInfo<'a>>,
+    transfer_hook_accounts: &Vec<AccountInfo<'a>>,
 ) -> Result<(), ProgramError> {
     let mut ix = spl_token_2022::instruction::transfer_checked(
         token_program_2022_account.key,

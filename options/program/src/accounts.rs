@@ -54,13 +54,18 @@ pub fn check_system_program_key<'a>(account_info: &'a AccountInfo<'a>) -> Progra
     return Ok(());
 }
 
-pub fn check_token_program_2022_key<'a>(account_info: &'a AccountInfo<'a>) -> ProgramResult {
-    if account_info.key != &spl_token_2022::id() {
-        msg!("expected token 2022 program {}", spl_token_2022::id());
-        return Err(ProgramError::InvalidAccountData);
+pub fn check_token_program_key<'a>(
+    account_info: &'a AccountInfo<'a>,
+) -> Result<bool, ProgramError> {
+    if account_info.key == &spl_token::id() {
+        return Ok(false);
     }
 
-    return Ok(());
+    if account_info.key == &spl_token_2022::id() {
+        return Ok(true);
+    }
+
+    return Err(ProgramError::InvalidAccountData);
 }
 
 pub fn check_associated_token_program_key<'a>(account_info: &'a AccountInfo<'a>) -> ProgramResult {

@@ -22,7 +22,7 @@ use solana_transaction_status::UiTransactionEncoding;
 const URL: &str = "https://api.devnet.solana.com";
 //const URL: &str = "http://127.0.0.1:8899";
 
-const PROGRAM_PUBKEY: &str = "42BuBercjs5puXz9evhkiYbxYoQtuuSo8zDXkWFRFM9a";
+const PROGRAM_PUBKEY: &str = "E2ConrgkPx3tc7oKbt4phBiBsKuXoh1FWBr82znSipX1";
 
 fn main() {
     let args: Vec<String> = env::args().collect();

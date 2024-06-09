@@ -58,11 +58,7 @@ pub enum OptionsInstruction {
     #[account(5, name = "user_token_account", desc = "Users ATA")]
     #[account(6, name = "program_token_account", desc = "Program ATA")]
     #[account(7, name = "core_program", desc = "MPL Core")]
-    #[account(
-        8,
-        name = "associated_token_program",
-        desc = "Associated Token Program"
-    )]
+    #[account(8, name = "associated", desc = "Associated Token Program")]
     #[account(9, name = "token_2022", desc = "Token 2022 Program")]
     #[account(10, name = "system_program", desc = "System program")]
     CreateOption(CreateOptionAssetMeta),

@@ -148,12 +148,31 @@ impl Processor {
     ) -> ProgramResult {
         let ctx = CreateOptionAccounts::context(accounts)?;
 
+        let is_2022 = accounts::check_token_program_key(ctx.accounts.token_2022)?;
+        accounts::check_system_program_key(ctx.accounts.system_program)?;
+        accounts::check_associated_token_program_key(ctx.accounts.associated)?;
+
+        let extra_accounts = ctx.remaining_accounts.to_vec();
+
         let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
 
         let mint_data = ctx.accounts.token_mint.data.borrow();
         let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
 
-        let whole_tokens = (args.token_amount as f64) / f64::powf(10.0, mint.base.decimals as f64);
+        let input_amount = if let Ok(transfer_fee_config) =
+            mint.get_extension::<spl_token_2022::extension::transfer_fee::TransferFeeConfig>()
+        {
+            let fee_1 = transfer_fee_config
+                .calculate_epoch_fee(Clock::get()?.epoch, args.token_amount)
+                .ok_or(ProgramError::InvalidArgument)?;
+            args.token_amount.saturating_sub(fee_1)
+        } else {
+            args.token_amount
+        };
+
+        msg!("Input post fees {} -> {}", args.token_amount, input_amount);
+
+        let whole_tokens = (input_amount as f64) / f64::powf(10.0, mint.base.decimals as f64);
         let strike_price = (args.strike as f64) / (LAMPORTS_PER_SOL as f64);
         let total_lamports = ((args.strike as f64) * whole_tokens) as u64;
 
@@ -287,7 +306,8 @@ impl Processor {
 
         // if this is an option for someone to buy tokens from the user, transfer them to the program now
         if args.side == 0 {
-            utils::transfer_T22_tokens(
+            utils::transfer_tokens(
+                is_2022,
                 args.token_amount,
                 ctx.accounts.user_token_account,
                 ctx.accounts.token_mint,
@@ -297,7 +317,7 @@ impl Processor {
                 pda_bump_seed,
                 vec![b"pda"],
                 mint.base.decimals,
-                &Vec::new(),
+                &extra_accounts,
             )
             .unwrap();
         }
@@ -372,7 +392,9 @@ impl Processor {
     ) -> Result<(), ProgramError> {
         let ctx = ExecuteAccounts::context(accounts)?;
 
-        accounts::check_token_program_2022_key(ctx.accounts.token_2022)?;
+        let extra_accounts = ctx.remaining_accounts.to_vec();
+
+        let is_2022 = accounts::check_token_program_key(ctx.accounts.token_2022)?;
         accounts::check_system_program_key(ctx.accounts.system_program)?;
         accounts::check_associated_token_program_key(ctx.accounts.associated)?;
 
@@ -430,7 +452,8 @@ impl Processor {
 
         // if this was a buy option then transfer the tokens to the user, and the SOL to the creator
         if side == 0 {
-            utils::transfer_T22_tokens(
+            utils::transfer_tokens(
+                is_2022,
                 token_amount,
                 ctx.accounts.program_token_account,
                 ctx.accounts.token_mint,
@@ -440,7 +463,7 @@ impl Processor {
                 pda_bump_seed,
                 vec![b"pda"],
                 mint.base.decimals,
-                &Vec::new(),
+                &extra_accounts,
             )
             .unwrap();
 
@@ -463,7 +486,8 @@ impl Processor {
                 &[&[b"pda", &[pda_bump_seed]]],
             )?;
 
-            utils::transfer_T22_tokens(
+            utils::transfer_tokens(
+                is_2022,
                 token_amount,
                 ctx.accounts.user_token_account,
                 ctx.accounts.token_mint,
@@ -473,7 +497,7 @@ impl Processor {
                 pda_bump_seed,
                 vec![b"pda"],
                 mint.base.decimals,
-                &Vec::new(),
+                &extra_accounts,
             )
             .unwrap();
         }
@@ -497,7 +521,9 @@ impl Processor {
     ) -> Result<(), ProgramError> {
         let ctx = RefundAccounts::context(accounts)?;
 
-        accounts::check_token_program_2022_key(ctx.accounts.token_2022)?;
+        let extra_accounts = ctx.remaining_accounts.to_vec();
+
+        let is_2022 = accounts::check_token_program_key(ctx.accounts.token_2022)?;
         accounts::check_system_program_key(ctx.accounts.system_program)?;
         accounts::check_associated_token_program_key(ctx.accounts.associated)?;
 
@@ -536,7 +562,8 @@ impl Processor {
         // if this was a buy option then return the tokens to the creator
         if side == 0 {
             msg!("Refund buy option {}", token_amount);
-            utils::transfer_T22_tokens(
+            utils::transfer_tokens(
+                is_2022,
                 token_amount,
                 ctx.accounts.program_token_account,
                 ctx.accounts.token_mint,
@@ -546,7 +573,7 @@ impl Processor {
                 pda_bump_seed,
                 vec![b"pda"],
                 mint.base.decimals,
-                &Vec::new(),
+                &extra_accounts,
             )
             .unwrap();
         } else {

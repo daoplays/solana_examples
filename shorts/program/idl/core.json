@@ -1,0 +1,192 @@
+{
+  "version": "1.0.0",
+  "name": "core",
+  "instructions": [
+    {
+      "name": "CreateCollection",
+      "accounts": [
+        {
+          "name": "user",
+          "isMut": true,
+          "isSigner": true,
+          "docs": [
+            "Users account, signer"
+          ]
+        },
+        {
+          "name": "collectionAccount",
+          "isMut": true,
+          "isSigner": false,
+          "docs": [
+            "Account of new collection"
+          ]
+        },
+        {
+          "name": "coreProgram",
+          "isMut": false,
+          "isSigner": false,
+          "docs": [
+            "MPL Core"
+          ]
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false,
+          "docs": [
+            "System program"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "createMeta",
+          "type": {
+            "defined": "CreateMeta"
+          }
+        }
+      ],
+      "discriminant": {
+        "type": "u8",
+        "value": 0
+      }
+    },
+    {
+      "name": "CreateToken",
+      "accounts": [
+        {
+          "name": "user",
+          "isMut": true,
+          "isSigner": true,
+          "docs": [
+            "Users account, signer"
+          ]
+        },
+        {
+          "name": "assetAccount",
+          "isMut": true,
+          "isSigner": false,
+          "docs": [
+            "Account of new NFT"
+          ]
+        },
+        {
+          "name": "collectionAccount",
+          "isMut": true,
+          "isSigner": false,
+          "docs": [
+            "Account of NFT collection"
+          ]
+        },
+        {
+          "name": "coreProgram",
+          "isMut": false,
+          "isSigner": false,
+          "docs": [
+            "MPL Core"
+          ]
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false,
+          "docs": [
+            "System program"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "createMeta",
+          "type": {
+            "defined": "CreateMeta"
+          }
+        }
+      ],
+      "discriminant": {
+        "type": "u8",
+        "value": 1
+      }
+    },
+    {
+      "name": "TransferToken",
+      "accounts": [
+        {
+          "name": "user",
+          "isMut": true,
+          "isSigner": true,
+          "docs": [
+            "Users account, signer"
+          ]
+        },
+        {
+          "name": "destinationAccount",
+          "isMut": true,
+          "isSigner": false,
+          "docs": [
+            "Account to send the NFT to"
+          ]
+        },
+        {
+          "name": "assetAccount",
+          "isMut": true,
+          "isSigner": false,
+          "docs": [
+            "Account of NFT"
+          ]
+        },
+        {
+          "name": "collectionAccount",
+          "isMut": true,
+          "isSigner": false,
+          "docs": [
+            "Account of NFT collection"
+          ]
+        },
+        {
+          "name": "coreProgram",
+          "isMut": false,
+          "isSigner": false,
+          "docs": [
+            "MPL Core"
+          ]
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false,
+          "docs": [
+            "System program"
+          ]
+        }
+      ],
+      "args": [],
+      "discriminant": {
+        "type": "u8",
+        "value": 2
+      }
+    }
+  ],
+  "types": [
+    {
+      "name": "CreateMeta",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "uri",
+            "type": "string"
+          }
+        ]
+      }
+    }
+  ],
+  "metadata": {
+    "origin": "shank",
+    "address": "GQ3oYuYQcy2E4i5Qk4wUXN5BboU2Wzw7gwHPFFrSHKfw"
+  }
+}

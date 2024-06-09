@@ -1181,6 +1181,7 @@ dependencies = [
  "spl-discriminator",
  "spl-pod",
  "spl-tlv-account-resolution",
+ "spl-token",
  "spl-token-2022",
  "spl-type-length-value",
  "thiserror",
