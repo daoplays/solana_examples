@@ -6,6 +6,22 @@ use solana_program::{
 
 use crate::instruction::accounts::TransferTokenAccounts;
 
+pub fn get_collection_seeds<'a>(
+    base_mint: Pubkey,
+    quote_mint: Pubkey,
+    amm_seeds: &mut Vec<Pubkey>,
+) {
+    let base_first = base_mint.to_string() < quote_mint.to_string();
+
+    if base_first {
+        amm_seeds.push(base_mint);
+        amm_seeds.push(quote_mint)
+    } else {
+        amm_seeds.push(quote_mint);
+        amm_seeds.push(base_mint);
+    }
+}
+
 pub fn check_program_data_account<'a>(
     account_info: &'a AccountInfo<'a>,
     program_id: &Pubkey,

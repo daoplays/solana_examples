@@ -214,7 +214,26 @@ pub fn transfer_T22_tokens<'a>(
     }
     // Sign and submit transaction
     // Sign and submit transaction
-    invoke_signed(&ix, &account_infos, &[&[seed[0], &[bump_seed]]])?;
+
+    // Sign and submit transaction
+    if seed.len() == 1 {
+        // Sign and submit transaction
+        invoke_signed(&ix, &account_infos, &[&[seed[0], &[bump_seed]]])?;
+    }
+
+    if seed.len() == 2 {
+        // Sign and submit transaction
+        invoke_signed(&ix, &account_infos, &[&[seed[0], seed[1], &[bump_seed]]])?;
+    }
+
+    if seed.len() == 3 {
+        // Sign and submit transaction
+        invoke_signed(
+            &ix,
+            &account_infos,
+            &[&[seed[0], seed[1], seed[2], &[bump_seed]]],
+        )?;
+    }
 
     Ok(())
 }

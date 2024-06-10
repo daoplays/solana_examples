@@ -540,8 +540,12 @@ pub fn perform_swap<'a>(
             ctx.accounts.amm_quote,
             ctx.accounts.user,
             ctx.accounts.quote_token_program,
-            pda_bump_seed,
-            vec![b"pda"],
+            amm_bump_seed,
+            vec![
+                &amm_seed_keys[0].to_bytes(),
+                &amm_seed_keys[1].to_bytes(),
+                b"AMM",
+            ],
             quote_decimals,
             &Vec::new(),
         )?;

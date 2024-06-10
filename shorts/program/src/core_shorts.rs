@@ -182,6 +182,7 @@ pub fn buy_short<'a>(
             ],
         )?;
     } else {
+        msg!("transfer deposit");
         utils::transfer_tokens(
             quote_2022,
             args.overhead,

@@ -50,6 +50,7 @@ impl Processor {
             }
 
             OptionsInstruction::CreateOption(args) => {
+                msg!("Create Option");
                 Self::create_option(program_id, accounts, args)
             }
             OptionsInstruction::TransferToken => utils::transfer(program_id, accounts),
@@ -98,8 +99,19 @@ impl Processor {
     ) -> ProgramResult {
         let ctx = CreateCollectionAccounts::context(accounts)?;
 
+        let mut seed_keys: Vec<Pubkey> = Vec::new();
+        utils::get_collection_seeds(
+            *ctx.accounts.base_mint.key,
+            *ctx.accounts.quote_mint.key,
+            &mut seed_keys,
+        );
+
         let (_collection_account, bump_seed) = Pubkey::find_program_address(
-            &[&ctx.accounts.token_mint.key.to_bytes(), b"Collection"],
+            &[
+                &seed_keys[0].to_bytes(),
+                &seed_keys[1].to_bytes(),
+                b"Collection",
+            ],
             &program_id,
         );
 
@@ -114,7 +126,8 @@ impl Processor {
             .system_program(ctx.accounts.system_program)
             .invoke_signed(&[
                 &[
-                    &ctx.accounts.token_mint.key.to_bytes(),
+                    &seed_keys[0].to_bytes(),
+                    &seed_keys[1].to_bytes(),
                     b"Collection",
                     &[bump_seed],
                 ],
@@ -128,10 +141,16 @@ impl Processor {
             .authority(Some(ctx.accounts.program_pda))
             .plugin(mpl_core::types::Plugin::Attributes(
                 mpl_core::types::Attributes {
-                    attribute_list: vec![mpl_core::types::Attribute {
-                        key: "token_mint".to_string(),
-                        value: ctx.accounts.token_mint.key.to_string(),
-                    }],
+                    attribute_list: vec![
+                        mpl_core::types::Attribute {
+                            key: "base_mint".to_string(),
+                            value: ctx.accounts.base_mint.key.to_string(),
+                        },
+                        mpl_core::types::Attribute {
+                            key: "quote_mint".to_string(),
+                            value: ctx.accounts.quote_mint.key.to_string(),
+                        },
+                    ],
                 },
             ))
             .system_program(ctx.accounts.system_program)
@@ -148,7 +167,9 @@ impl Processor {
     ) -> ProgramResult {
         let ctx = CreateOptionAccounts::context(accounts)?;
 
-        let is_2022 = accounts::check_token_program_key(ctx.accounts.token_2022)?;
+        let base_2022 = accounts::check_token_program_key(ctx.accounts.base_token_program)?;
+        let quote_2022 = accounts::check_token_program_key(ctx.accounts.quote_token_program)?;
+
         accounts::check_system_program_key(ctx.accounts.system_program)?;
         accounts::check_associated_token_program_key(ctx.accounts.associated)?;
 
@@ -156,27 +177,77 @@ impl Processor {
 
         let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
 
-        let mint_data = ctx.accounts.token_mint.data.borrow();
-        let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
+        let mut seed_keys: Vec<Pubkey> = Vec::new();
+        utils::get_collection_seeds(
+            *ctx.accounts.base_mint.key,
+            *ctx.accounts.quote_mint.key,
+            &mut seed_keys,
+        );
 
-        let input_amount = if let Ok(transfer_fee_config) =
-            mint.get_extension::<spl_token_2022::extension::transfer_fee::TransferFeeConfig>()
+        let (collection_account, _collection_bump_seed) = Pubkey::find_program_address(
+            &[
+                &seed_keys[0].to_bytes(),
+                &seed_keys[1].to_bytes(),
+                b"Collection",
+            ],
+            &program_id,
+        );
+
+        if collection_account != *ctx.accounts.collection_account.key {
+            msg!("invalid collection account");
+            return Err(ProgramError::InvalidArgument);
+        }
+
+        let base_mint_data = ctx.accounts.base_mint.data.borrow();
+        let quote_mint_data = ctx.accounts.quote_mint.data.borrow();
+
+        let base_mint =
+            StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&base_mint_data)?;
+
+        let quote_mint =
+            StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&quote_mint_data)?;
+
+        let base_input_amount = if let Ok(transfer_fee_config) =
+            base_mint.get_extension::<spl_token_2022::extension::transfer_fee::TransferFeeConfig>()
         {
             let fee_1 = transfer_fee_config
-                .calculate_epoch_fee(Clock::get()?.epoch, args.token_amount)
+                .calculate_inverse_epoch_fee(Clock::get()?.epoch, args.token_amount)
                 .ok_or(ProgramError::InvalidArgument)?;
-            args.token_amount.saturating_sub(fee_1)
+            args.token_amount + fee_1
         } else {
             args.token_amount
         };
 
+        let quote_input_amount = if let Ok(transfer_fee_config) =
+            quote_mint.get_extension::<spl_token_2022::extension::transfer_fee::TransferFeeConfig>()
+        {
+            let fee_1 = transfer_fee_config
+                .calculate_inverse_epoch_fee(Clock::get()?.epoch, args.token_amount)
+                .ok_or(ProgramError::InvalidArgument)?;
+            args.token_amount + fee_1
+        } else {
+            args.token_amount
+        };
+
+        let input_amount = if args.side == 0 {
+            base_input_amount
+        } else {
+            quote_input_amount
+        };
+
+        let input_decimals = if args.side == 0 {
+            base_mint.base.decimals
+        } else {
+            quote_mint.base.decimals
+        };
         msg!("Input post fees {} -> {}", args.token_amount, input_amount);
 
-        let whole_tokens = (input_amount as f64) / f64::powf(10.0, mint.base.decimals as f64);
-        let strike_price = (args.strike as f64) / (LAMPORTS_PER_SOL as f64);
-        let total_lamports = ((args.strike as f64) * whole_tokens) as u64;
-
+        let whole_tokens = (input_amount as f64) / f64::powf(10.0, base_mint.base.decimals as f64);
+        let strike_price = (args.strike as f64) / f64::powf(10.0, quote_mint.base.decimals as f64);
         let price_sol = (args.price as f64) / (LAMPORTS_PER_SOL as f64);
+
+        let quote_amount: u64 =
+            (whole_tokens * strike_price * f64::powf(10.0, quote_mint.base.decimals as f64)) as u64;
 
         let _create_cpi = CreateV1CpiBuilder::new(ctx.accounts.core_program)
             .authority(Some(ctx.accounts.program_pda))
@@ -227,7 +298,7 @@ impl Processor {
                         },
                         mpl_core::types::Attribute {
                             key: "token_mint".to_string(),
-                            value: ctx.accounts.token_mint.key.to_string(),
+                            value: ctx.accounts.base_mint.key.to_string(),
                         },
                         mpl_core::types::Attribute {
                             key: "token_amount".to_string(),
@@ -265,31 +336,53 @@ impl Processor {
             .unwrap();
 
         // create the token accounts if required
-        if **ctx.accounts.user_token_account.try_borrow_lamports()? == 0 {
+        if **ctx.accounts.user_base.try_borrow_lamports()? == 0 {
+            msg!("create user base");
             let create_user_ata_idx = create_associated_token_account(
                 &ctx.accounts.user.key,
                 &ctx.accounts.user.key,
-                &ctx.accounts.token_mint.key,
-                ctx.accounts.token_2022.key,
+                &ctx.accounts.base_mint.key,
+                ctx.accounts.base_token_program.key,
             );
 
             invoke(
                 &create_user_ata_idx,
                 &[
                     ctx.accounts.user.clone(),
-                    ctx.accounts.token_mint.clone(),
-                    ctx.accounts.user_token_account.clone(),
-                    ctx.accounts.token_2022.clone(),
+                    ctx.accounts.base_mint.clone(),
+                    ctx.accounts.user_base.clone(),
+                    ctx.accounts.base_token_program.clone(),
                 ],
             )?;
         }
 
-        if **ctx.accounts.program_token_account.try_borrow_lamports()? == 0 {
+        if **ctx.accounts.user_quote.try_borrow_lamports()? == 0 {
+            msg!("create user quote");
+            let create_user_ata_idx = create_associated_token_account(
+                &ctx.accounts.user.key,
+                &ctx.accounts.user.key,
+                &ctx.accounts.quote_mint.key,
+                ctx.accounts.quote_token_program.key,
+            );
+
+            invoke(
+                &create_user_ata_idx,
+                &[
+                    ctx.accounts.user.clone(),
+                    ctx.accounts.quote_mint.clone(),
+                    ctx.accounts.user_quote.clone(),
+                    ctx.accounts.quote_token_program.clone(),
+                ],
+            )?;
+        }
+
+        if **ctx.accounts.program_base.try_borrow_lamports()? == 0 {
+            msg!("create program base");
             let create_program_ata_idx = create_associated_token_account(
                 &ctx.accounts.user.key,
                 &ctx.accounts.program_pda.key,
-                &ctx.accounts.token_mint.key,
-                ctx.accounts.token_2022.key,
+                &ctx.accounts.base_mint.key,
+                ctx.accounts.base_token_program.key,
             );
 
             invoke(
@@ -297,9 +390,30 @@ impl Processor {
                 &[
                     ctx.accounts.user.clone(),
                     ctx.accounts.program_pda.clone(),
-                    ctx.accounts.token_mint.clone(),
-                    ctx.accounts.program_token_account.clone(),
-                    ctx.accounts.token_2022.clone(),
+                    ctx.accounts.base_mint.clone(),
+                    ctx.accounts.program_base.clone(),
+                    ctx.accounts.base_token_program.clone(),
+                ],
+            )?;
+        }
+
+        if **ctx.accounts.program_quote.try_borrow_lamports()? == 0 {
+            msg!("create program quote");
+            let create_program_ata_idx = create_associated_token_account(
+                &ctx.accounts.user.key,
+                &ctx.accounts.program_pda.key,
+                &ctx.accounts.quote_mint.key,
+                ctx.accounts.quote_token_program.key,
+            );
+
+            invoke(
+                &create_program_ata_idx,
+                &[
+                    ctx.accounts.user.clone(),
+                    ctx.accounts.program_pda.clone(),
+                    ctx.accounts.quote_mint.clone(),
+                    ctx.accounts.program_quote.clone(),
+                    ctx.accounts.quote_token_program.clone(),
                 ],
             )?;
         }
@@ -307,30 +421,36 @@ impl Processor {
         // if this is an option for someone to buy tokens from the user, transfer them to the program now
         if args.side == 0 {
             utils::transfer_tokens(
-                is_2022,
+                base_2022,
                 args.token_amount,
-                ctx.accounts.user_token_account,
-                ctx.accounts.token_mint,
-                ctx.accounts.program_token_account,
+                ctx.accounts.user_base,
+                ctx.accounts.base_mint,
+                ctx.accounts.program_base,
                 ctx.accounts.user,
-                ctx.accounts.token_2022,
+                ctx.accounts.base_token_program,
                 pda_bump_seed,
                 vec![b"pda"],
-                mint.base.decimals,
+                input_decimals,
                 &extra_accounts,
             )
             .unwrap();
         }
-        // otherwise transfer the SOL to the PDA
+        // otherwise transfer the quote tokens to the program
         else {
-            invoke(
-                &system_instruction::transfer(
-                    ctx.accounts.user.key,
-                    ctx.accounts.program_pda.key,
-                    total_lamports,
-                ),
-                &[ctx.accounts.user.clone(), ctx.accounts.program_pda.clone()],
-            )?;
+            utils::transfer_tokens(
+                quote_2022,
+                quote_amount,
+                ctx.accounts.user_quote,
+                ctx.accounts.quote_mint,
+                ctx.accounts.program_quote,
+                ctx.accounts.user,
+                ctx.accounts.quote_token_program,
+                pda_bump_seed,
+                vec![b"pda"],
+                input_decimals,
+                &extra_accounts,
+            )
+            .unwrap();
         }
 
         Ok(())
@@ -394,14 +514,42 @@ impl Processor {
 
         let extra_accounts = ctx.remaining_accounts.to_vec();
 
-        let is_2022 = accounts::check_token_program_key(ctx.accounts.token_2022)?;
+        let base_2022 = accounts::check_token_program_key(ctx.accounts.base_token_program)?;
+        let quote_2022 = accounts::check_token_program_key(ctx.accounts.quote_token_program)?;
+
         accounts::check_system_program_key(ctx.accounts.system_program)?;
         accounts::check_associated_token_program_key(ctx.accounts.associated)?;
 
         let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
 
-        let mint_data = ctx.accounts.token_mint.data.borrow();
-        let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
+        let mut seed_keys: Vec<Pubkey> = Vec::new();
+        utils::get_collection_seeds(
+            *ctx.accounts.base_mint.key,
+            *ctx.accounts.quote_mint.key,
+            &mut seed_keys,
+        );
+
+        let (collection_account, _collection_bump_seed) = Pubkey::find_program_address(
+            &[
+                &seed_keys[0].to_bytes(),
+                &seed_keys[1].to_bytes(),
+                b"Collection",
+            ],
+            &program_id,
+        );
+
+        if collection_account != *ctx.accounts.collection_account.key {
+            msg!("invalid collection account");
+            return Err(ProgramError::InvalidArgument);
+        }
+
+        let base_mint_data = ctx.accounts.base_mint.data.borrow();
+        let quote_mint_data = ctx.accounts.quote_mint.data.borrow();
+
+        let base_mint =
+            StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&base_mint_data)?;
+        let quote_mint =
+            StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&quote_mint_data)?;
 
         let asset = mpl_core::Asset::from_bytes(&ctx.accounts.asset_account.data.borrow()[..])?;
 
@@ -423,80 +571,111 @@ impl Processor {
         }
 
         // create the token accounts if required
-        if **ctx.accounts.user_token_account.try_borrow_lamports()? == 0 {
+        if **ctx.accounts.user_base.try_borrow_lamports()? == 0 {
             let create_user_ata_idx = create_associated_token_account(
                 &ctx.accounts.user.key,
                 &ctx.accounts.user.key,
-                &ctx.accounts.token_mint.key,
-                ctx.accounts.token_2022.key,
+                &ctx.accounts.base_mint.key,
+                ctx.accounts.base_token_program.key,
             );
 
             invoke(
                 &create_user_ata_idx,
                 &[
                     ctx.accounts.user.clone(),
-                    ctx.accounts.token_mint.clone(),
-                    ctx.accounts.user_token_account.clone(),
-                    ctx.accounts.token_2022.clone(),
+                    ctx.accounts.base_mint.clone(),
+                    ctx.accounts.user_base.clone(),
+                    ctx.accounts.base_token_program.clone(),
+                ],
+            )?;
+        }
+
+        if **ctx.accounts.user_quote.try_borrow_lamports()? == 0 {
+            let create_user_ata_idx = create_associated_token_account(
+                &ctx.accounts.user.key,
+                &ctx.accounts.user.key,
+                &ctx.accounts.quote_mint.key,
+                ctx.accounts.quote_token_program.key,
+            );
+
+            invoke(
+                &create_user_ata_idx,
+                &[
+                    ctx.accounts.user.clone(),
+                    ctx.accounts.quote_mint.clone(),
+                    ctx.accounts.user_quote.clone(),
+                    ctx.accounts.quote_token_program.clone(),
                 ],
             )?;
         }
 
         let side: u8 = asset_attributes[1].value.parse::<u8>().unwrap();
         let whole_token_amount: f64 = asset_attributes[3].value.parse::<f64>().unwrap();
-        let token_amount: u64 =
-            (whole_token_amount * ((10 as u64).pow(mint.base.decimals as u32) as f64)) as u64;
+        let base_amount: u64 =
+            (whole_token_amount * ((10 as u64).pow(base_mint.base.decimals as u32) as f64)) as u64;
 
         let strike: f64 = asset_attributes[4].value.parse::<f64>().unwrap();
-        let lamports: u64 = (whole_token_amount * strike * (LAMPORTS_PER_SOL as f64)) as u64;
+        let quote_amount: u64 =
+            (whole_token_amount * strike * f64::powf(10.0, quote_mint.base.decimals as f64)) as u64;
 
         // if this was a buy option then transfer the tokens to the user, and the SOL to the creator
         if side == 0 {
             utils::transfer_tokens(
-                is_2022,
-                token_amount,
-                ctx.accounts.program_token_account,
-                ctx.accounts.token_mint,
-                ctx.accounts.user_token_account,
+                base_2022,
+                base_amount,
+                ctx.accounts.program_base,
+                ctx.accounts.base_mint,
+                ctx.accounts.user_base,
                 ctx.accounts.program_pda,
-                ctx.accounts.token_2022,
+                ctx.accounts.base_token_program,
                 pda_bump_seed,
                 vec![b"pda"],
-                mint.base.decimals,
+                base_mint.base.decimals,
                 &extra_accounts,
             )
             .unwrap();
 
-            invoke(
-                &system_instruction::transfer(
-                    ctx.accounts.user.key,
-                    ctx.accounts.creator.key,
-                    lamports,
-                ),
-                &[ctx.accounts.user.clone(), ctx.accounts.creator.clone()],
-            )?;
-        } else {
-            invoke_signed(
-                &system_instruction::transfer(
-                    ctx.accounts.program_pda.key,
-                    ctx.accounts.user.key,
-                    lamports,
-                ),
-                &[ctx.accounts.user.clone(), ctx.accounts.program_pda.clone()],
-                &[&[b"pda", &[pda_bump_seed]]],
-            )?;
-
             utils::transfer_tokens(
-                is_2022,
-                token_amount,
-                ctx.accounts.user_token_account,
-                ctx.accounts.token_mint,
-                ctx.accounts.creator_token_account,
+                quote_2022,
+                quote_amount,
+                ctx.accounts.user_quote,
+                ctx.accounts.quote_mint,
+                ctx.accounts.creator_quote,
                 ctx.accounts.user,
-                ctx.accounts.token_2022,
+                ctx.accounts.quote_token_program,
                 pda_bump_seed,
                 vec![b"pda"],
-                mint.base.decimals,
+                quote_mint.base.decimals,
+                &extra_accounts,
+            )
+            .unwrap();
+        } else {
+            utils::transfer_tokens(
+                quote_2022,
+                quote_amount,
+                ctx.accounts.program_quote,
+                ctx.accounts.quote_mint,
+                ctx.accounts.user_quote,
+                ctx.accounts.program_pda,
+                ctx.accounts.quote_token_program,
+                pda_bump_seed,
+                vec![b"pda"],
+                quote_mint.base.decimals,
+                &extra_accounts,
+            )
+            .unwrap();
+
+            utils::transfer_tokens(
+                base_2022,
+                base_amount,
+                ctx.accounts.user_base,
+                ctx.accounts.base_mint,
+                ctx.accounts.creator_base,
+                ctx.accounts.user,
+                ctx.accounts.base_token_program,
+                pda_bump_seed,
+                vec![b"pda"],
+                base_mint.base.decimals,
                 &extra_accounts,
             )
             .unwrap();
@@ -523,14 +702,42 @@ impl Processor {
 
         let extra_accounts = ctx.remaining_accounts.to_vec();
 
-        let is_2022 = accounts::check_token_program_key(ctx.accounts.token_2022)?;
+        let base_2022 = accounts::check_token_program_key(ctx.accounts.base_token_program)?;
+        let quote_2022 = accounts::check_token_program_key(ctx.accounts.quote_token_program)?;
+
         accounts::check_system_program_key(ctx.accounts.system_program)?;
         accounts::check_associated_token_program_key(ctx.accounts.associated)?;
 
         let (_pda_account, pda_bump_seed) = Pubkey::find_program_address(&[b"pda"], &program_id);
 
-        let mint_data = ctx.accounts.token_mint.data.borrow();
-        let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
+        let mut seed_keys: Vec<Pubkey> = Vec::new();
+        utils::get_collection_seeds(
+            *ctx.accounts.base_mint.key,
+            *ctx.accounts.quote_mint.key,
+            &mut seed_keys,
+        );
+
+        let (collection_account, _collection_bump_seed) = Pubkey::find_program_address(
+            &[
+                &seed_keys[0].to_bytes(),
+                &seed_keys[1].to_bytes(),
+                b"Collection",
+            ],
+            &program_id,
+        );
+
+        if collection_account != *ctx.accounts.collection_account.key {
+            msg!("invalid collection account");
+            return Err(ProgramError::InvalidArgument);
+        }
+
+        let base_mint_data = ctx.accounts.base_mint.data.borrow();
+        let base_mint =
+            StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&base_mint_data)?;
+
+        let quote_mint_data = ctx.accounts.quote_mint.data.borrow();
+        let quote_mint =
+            StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&quote_mint_data)?;
 
         let asset = mpl_core::Asset::from_bytes(&ctx.accounts.asset_account.data.borrow()[..])?;
 
@@ -553,39 +760,46 @@ impl Processor {
 
         let side: u8 = asset_attributes[1].value.parse::<u8>().unwrap();
         let whole_token_amount: f64 = asset_attributes[3].value.parse::<f64>().unwrap();
-        let token_amount: u64 =
-            (whole_token_amount * ((10 as u64).pow(mint.base.decimals as u32) as f64)) as u64;
+        let base_amount: u64 =
+            (whole_token_amount * ((10 as u64).pow(base_mint.base.decimals as u32) as f64)) as u64;
 
         let strike: f64 = asset_attributes[4].value.parse::<f64>().unwrap();
-        let lamports: u64 = (whole_token_amount * strike * (LAMPORTS_PER_SOL as f64)) as u64;
+        let quote_amount: u64 =
+            (whole_token_amount * strike * f64::powf(10.0, quote_mint.base.decimals as f64)) as u64;
 
         // if this was a buy option then return the tokens to the creator
         if side == 0 {
-            msg!("Refund buy option {}", token_amount);
+            msg!("Refund buy option {}", base_amount);
             utils::transfer_tokens(
-                is_2022,
-                token_amount,
-                ctx.accounts.program_token_account,
-                ctx.accounts.token_mint,
-                ctx.accounts.creator_token_account,
+                base_2022,
+                base_amount,
+                ctx.accounts.program_base,
+                ctx.accounts.base_mint,
+                ctx.accounts.creator_base,
                 ctx.accounts.program_pda,
-                ctx.accounts.token_2022,
+                ctx.accounts.base_token_program,
                 pda_bump_seed,
                 vec![b"pda"],
-                mint.base.decimals,
+                base_mint.base.decimals,
                 &extra_accounts,
             )
             .unwrap();
         } else {
-            invoke_signed(
-                &system_instruction::transfer(
-                    ctx.accounts.program_pda.key,
-                    ctx.accounts.creator.key,
-                    lamports,
-                ),
-                &[ctx.accounts.user.clone(), ctx.accounts.program_pda.clone()],
-                &[&[b"pda", &[pda_bump_seed]]],
-            )?;
+            msg!("Refund quote option {}", quote_amount);
+            utils::transfer_tokens(
+                quote_2022,
+                quote_amount,
+                ctx.accounts.program_quote,
+                ctx.accounts.quote_mint,
+                ctx.accounts.creator_quote,
+                ctx.accounts.program_pda,
+                ctx.accounts.quote_token_program,
+                pda_bump_seed,
+                vec![b"pda"],
+                quote_mint.base.decimals,
+                &extra_accounts,
+            )
+            .unwrap();
         }
 
         // finally transfer and burn the asset
